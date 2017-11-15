@@ -37,7 +37,7 @@ def rotationMatrixToEulerAngles(R):
 class deepVO(object):
     """ deepVO RCNN Model """
 
-    def __init__(self, config, is_training=True, _only_position = True, num_frames=10):
+    def __init__(self, config, is_training=True, _only_position = True, num_frames=100):
         """ Initialization
         param: config = configuration
         param: dataset = KITTY Dataset 0th trajectory
@@ -49,13 +49,10 @@ class deepVO(object):
         # Importing stacked images and ground truth
         # stacked images shape: [height, width, channels = 2]
         # pose_ground_truth shape: [num_frames, 12]
-        self._input_images_stacked, pose_ground_truth = self._import_dataset(num_frames=10)
+        self._input_images_stacked, pose_ground_truth = self._import_dataset(num_frames)
 
         #consinder only position
         #_only_position = True
-
-        # Final weight layer size
-        w_size = 10
 
         if not _only_position:
             pose_size = 6
@@ -73,10 +70,10 @@ class deepVO(object):
         (output, _)  = self._build_rnn_graph(is_training)
 
         # Change the below code for different loss function based on paper
-        regression_w = tf.get_variable('regression_w', shape=[w_size, pose_size], dtype=tf.float32)
+        regression_w = tf.get_variable('regression_w', shape=[self._config.hidden_size, pose_size], dtype=tf.float32)
         regression_b = tf.get_variable("regression_b", shape=[pose_size], dtype=tf.float32)
 
-        pose_estimated = [tf.nn.xw_plus_b(output[i], regression_w, regression_b) for i in range(len(output))]
+        pose_estimated = [tf.nn.xw_plus_b(output[i], regression_w, regression_b) for i in range(output.shape[0])]
         pose_estimated = tf.reshape(tf.convert_to_tensor(pose_estimated), [num_frames, pose_size])
         # Use the contrib sequence loss and average over the batches
         self._loss = tf.reduce_sum(tf.square(pose_estimated - self._pose_ground_truth[:num_frames,:]))
@@ -115,13 +112,24 @@ class deepVO(object):
         # initialized to 1 but the hyperparameters of the model would need to be
         # different than reported in the paper.
         cell = self._get_lstm_cell(is_training)
-        #cell = tf.contrib.rnn.MultiRNNCell([cell for _ in range(self._config.num_layers)], state_is_tuple=True)
+        # create 2 LSTMCells
+        rnn_layers = [tf.nn.rnn_cell.LSTMCell(size) for size in [self._config.hidden_size, self._config.hidden_size]]
 
-        self._initial_state = cell.zero_state(self._config.batch_size, dtype = tf.float32)
+        # create a RNN cell composed sequentially of a number of RNNCells
+        multi_rnn_cell = tf.nn.rnn_cell.MultiRNNCell(rnn_layers)
+
         rnn_inputs = [self._cnn_layers(stacked_img) for \
                 stacked_img in self._input_images_stacked]
         rnn_inputs = [tf.reshape(rnn_inputs[i],[-1, 20*6*1024]) for i in range(len(rnn_inputs))]
-        outputs, state = tf.contrib.rnn.static_rnn(cell, rnn_inputs, dtype=tf.float32)
+        max_time = len(rnn_inputs)
+        rnn_inputs = tf.convert_to_tensor(rnn_inputs)
+        rnn_inputs = tf.reshape(rnn_inputs, [self._config.batch_size, max_time, 20*6*1024])
+        # 'outputs' is a tensor of shape [batch_size, max_time, 1000]
+        # 'state' is a N-tuple where N is the number of LSTMCells containing a
+        # tf.contrib.rnn.LSTMStateTuple for each cell
+        outputs, state = tf.nn.dynamic_rnn(cell=multi_rnn_cell,
+                                           inputs=rnn_inputs,
+                                           dtype=tf.float32)
         return outputs, state
 
     def _cnn_layers(self, input_layer):
@@ -212,14 +220,14 @@ class deepVO(object):
 
 # config class
 class Config(object):
-    def __init__(self, lstm_hidden_size=10, lstm_num_layers=2, batch_size=1, num_steps= 10):
+    def __init__(self, lstm_hidden_size=1000, lstm_num_layers=2, batch_size=1, num_steps= 20):
         self.hidden_size = lstm_hidden_size
         self.num_layers = lstm_num_layers
         self.batch_size = batch_size
         self.num_steps = num_steps
 
 def main():
-    config = Config(lstm_hidden_size=10, lstm_num_layers=2)
+    config = Config(lstm_hidden_size=1000, lstm_num_layers=2)
     vo_train = deepVO(config)
 
 if __name__ == "__main__":
