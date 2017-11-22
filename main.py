@@ -217,7 +217,7 @@ def main(num_frames=10, is_training=True):
     labels_ = tf.placeholder(tf.float32, [None, pose_size])
 
     # Building the RCNN Network
-    (output, _)  = build_rnn_graph(config, input_, is_training)
+    (output, _)  = build_rcnn_graph(config, input_, is_training)
 
     # Output layer to compute the output
     regression_w = tf.get_variable('regression_w', shape=[config.hidden_size, pose_size], dtype=tf.float32)
