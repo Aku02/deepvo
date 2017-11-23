@@ -165,7 +165,7 @@ def cnn_layers(input_layer):
         """
         return output
 
-def import_dataset(num_frames=None, trajectory=0):
+def import_dataset(num_frames=None, pose_size=3,trajectory=0):
     """ Function that loads dataset
     """
     if num_frames == None:
@@ -175,6 +175,7 @@ def import_dataset(num_frames=None, trajectory=0):
     img_stacked = np.zeros((num_frames, 1, height, width, 2))
     with open('/Users/Shrinath/visual-odometry/dataset/poses/' +  '%02d' % trajectory + '.txt') as f:
         poses_ground_truth = np.array([[float(x) for x in line.split()] for line in f])
+        labels = poses_ground_truth[:,:pose_size]
     for i in range(num_frames):
         img1 = cv2.imread('/Users/Shrinath/visual-odometry/dataset/sequences/'+ '%02d' % trajectory + '/image_0/' +  '%06d' % i + '.png', 0)
         img2 = cv2.imread('/Users/Shrinath/visual-odometry/dataset/sequences/'+ '%02d' % trajectory + '/image_0/' +  '%06d' % (i+1) + '.png', 0)
@@ -182,7 +183,7 @@ def import_dataset(num_frames=None, trajectory=0):
         img2 = np.reshape(img2, [height, width, 1])
         img_aug = np.concatenate([img1, img2], axis=2)
         img_stacked[i, 0, :, :, :] = img_aug
-    return img_stacked, poses_ground_truth
+    return img_stacked, labels
 
 # Config class
 class Config(object):
@@ -197,8 +198,6 @@ class Config(object):
 
 def main(num_frames=10, is_training=True):
     config = Config(lstm_hidden_size=LSTM_HIDDEN_SIZE, lstm_num_layers=LSTM_NUM_LAYERS)
-    # Initialize the variables (i.e. assign their default value)
-    init = tf.global_variables_initializer()
     # configuration
     timesteps = num_frames
     if not config.only_position:
@@ -211,8 +210,8 @@ def main(num_frames=10, is_training=True):
     height, width, channels = 376, 1241, 2
 
     # placeholder for input
-    input_ = tf.placeholder(tf.float32, [timesteps, None, height, width, channels])
-    input_ = tf.unstack(input_, timesteps, 0)
+    input_data = tf.placeholder(tf.float32, [timesteps, None, height, width, channels])
+    input_ = tf.unstack(input_data, timesteps, 0)
     # placeholder for labels
     labels_ = tf.placeholder(tf.float32, [None, pose_size])
 
@@ -237,16 +236,18 @@ def main(num_frames=10, is_training=True):
 
     # Start training
     with tf.Session() as sess:
+        # Initialize the variables (i.e. assign their default value)
+        init = tf.global_variables_initializer()
         # Run the initializer
         sess.run(init)
         for step in range(1, config.num_steps+1):
-            batch_x, batch_y = import_dataset(num_frames=100)
+            batch_x, batch_y = import_dataset(num_frames=num_frames, pose_size=pose_size)
             print batch_x.shape
             # Run optimization op (backprop)
-            sess.run(train_op, feed_dict={input_: batch_x, labels_: batch_y})
+            sess.run(train_op, feed_dict={input_data: batch_x, labels_: batch_y})
             if step % 200 == 0 or step == 1:
                 # Calculate batch loss and accuracy
-                loss = sess.run(loss_op, feed_dict={input_: batch_x,
+                loss = sess.run(loss_op, feed_dict={input_data: batch_x,
                     labels_: batch_y})
                 print("Step " + str(step) + ", Minibatch Loss= " + \
                       "{:.4f}".format(loss) + ", Training Accuracy= ")
