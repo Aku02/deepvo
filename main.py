@@ -9,10 +9,11 @@ import warnings
 
 """ Hyper Parameters for learning"""
 LEARNING_RATE = 0.001
-BATCH_SIZE = 1
+BATCH_SIZE = 4
 LSTM_HIDDEN_SIZE = 1000
 LSTM_NUM_LAYERS = 2
-NUM_TRAIN_STEPS = 1000
+NUM_TRAIN_STEPS = 10000
+TIME_STEPS = 100
 
 
 def isRotationMatrix(R):
@@ -44,18 +45,9 @@ def rotationMatrixToEulerAngles(R):
 
     return np.array([x, y, z])
 
-def get_lstm_cell(config, is_training):
-    return tf.contrib.rnn.BasicLSTMCell(
-            config.hidden_size,
-            forget_bias=1.0)
-
-def build_rcnn_graph(config, input_ ,is_training):
+def build_rcnn_graph(config, input_):
     """ CNN layers connected to RNN which connects to final output """
 
-    # Slightly better results can be obtained with forget gate biases
-    # initialized to 1 but the hyperparameters of the model would need to be
-    # different than reported in the paper.
-    cell = get_lstm_cell(config, is_training)
     # create 2 LSTMCells
     rnn_layers = [tf.nn.rnn_cell.LSTMCell(size) for size in [config.hidden_size, config.hidden_size]]
 
@@ -69,15 +61,23 @@ def build_rcnn_graph(config, input_ ,is_training):
     rnn_inputs = [tf.reshape(rnn_inputs[i],[-1, 20*6*1024]) for i in range(len(rnn_inputs))]
 
     max_time = len(rnn_inputs)
+
     rnn_inputs = tf.convert_to_tensor(rnn_inputs)
-    rnn_inputs = tf.reshape(rnn_inputs, [config.batch_size, max_time, 20*6*1024])
+    rnn_inputs = tf.reshape(rnn_inputs, [-1, max_time, 20*6*1024])
+
     # 'outputs' is a tensor of shape [batch_size, max_time, 1000]
     # 'state' is a N-tuple where N is the number of LSTMCells containing a
     # tf.contrib.rnn.LSTMStateTuple for each cell
     outputs, state = tf.nn.dynamic_rnn(cell=multi_rnn_cell,
                                        inputs=rnn_inputs,
                                        dtype=tf.float32)
+    # Tensor shaped: [batch_size, max_time, cell.output_size]
+    outputs = tf.unstack(outputs, max_time, axis=1)
     return outputs, state
+
+def get_ground_6d_poses(cordinates):
+    """ For 6dof pose representaion """
+    pass
 
 def cnn_layers(input_layer):
         """ input: input_layer of concatonated images (img, img_next) where \
@@ -165,41 +165,106 @@ def cnn_layers(input_layer):
         """
         return output
 
-def import_dataset(num_frames=None, pose_size=3,trajectory=0):
-    """ Function that loads dataset
-    """
-    if num_frames == None:
-        num_frames = 4500
-    img1 = cv2.imread('/Users/Shrinath/visual-odometry/dataset/sequences/'+ '%02d' % trajectory + '/image_0/' +  '%06d' % 0 + '.png', 0)
-    height, width = img1.shape
-    img_stacked = np.zeros((num_frames, 1, height, width, 2))
-    with open('/Users/Shrinath/visual-odometry/dataset/poses/' +  '%02d' % trajectory + '.txt') as f:
-        poses_ground_truth = np.array([[float(x) for x in line.split()] for line in f])
-        labels = poses_ground_truth[:,:pose_size]
-    for i in range(num_frames):
-        img1 = cv2.imread('/Users/Shrinath/visual-odometry/dataset/sequences/'+ '%02d' % trajectory + '/image_0/' +  '%06d' % i + '.png', 0)
-        img2 = cv2.imread('/Users/Shrinath/visual-odometry/dataset/sequences/'+ '%02d' % trajectory + '/image_0/' +  '%06d' % (i+1) + '.png', 0)
-        img1 = np.reshape(img1, [height, width, 1])
-        img2 = np.reshape(img2, [height, width, 1])
-        img_aug = np.concatenate([img1, img2], axis=2)
-        img_stacked[i, 0, :, :, :] = img_aug
-    return img_stacked, labels
+# Dataset Class
+class Kitty(object):
+    """ Class for manipulating Dataset"""
+    def __init__(self, config, data_dir='/Users/Shrinath/visual-odometry/dataset/', isTraining=True):
+        self._config = config
+        self._data_dir= data_dir
+        self._batch_size = config.batch_size
+        self._current_initial_frame = 0
+        self._current_trajectory_index = 0
+        self._time_steps = config.time_steps
+        self._current_epoch = 0
+        self._training_trajectories = [0, 2, 8, 9]
+        self._test_trajectories = [1, 3, 4, 5, 6, 7]
+        if isTraining:
+            self._current_trajectories = self._training_trajectories
+        else:
+            self._current_trajectories = self._test_trajectories
+        self._img_height, self._img_width = self.get_image(0,0).shape
+        self._trajectory_out_of_bound = False
+        if not config.only_position:
+            self._pose_size = 6
+        else:
+            self._pose_size = 3
+
+    def get_image(self, trajectory, frame_index):
+        img = cv2.imread( self._data_dir + 'sequences/'+ '%02d' % trajectory + '/image_0/' +  '%06d' % frame_index + '.png', 0)
+        if img is None:
+            # Subtracting mean intensity value of the corresponding image
+            img = img - np.mean(img)
+        return img
+
+    def get_poses(self, trajectory):
+        with open(self._data_dir + 'poses/' +  '%02d' % trajectory + '.txt') as f:
+            poses = np.array([[float(x) for x in line.split()] for line in f])
+        return poses
+
+    def _set_next_trajectory(self):
+        if (self._current_trajectory_index < len(self._current_trajectories)):
+            self._current_trajectory_index += 1
+            self._current_initial_frame = 0
+        else:
+            self._current_epoch += 1
+            self._current_trajectory_index = 0
+            self._current_initial_frame = 0
+
+
+    def get_next_batch(self, isTraining):
+        """ Function that returns the batch for dataset
+        """
+        img_batch = []
+        label_batch = []
+        if isTraining:
+            self._current_trajectories = self._training_trajectories
+        else:
+            self._current_trajectories = self._test_trajectories
+
+        poses = self.get_poses(self._current_trajectories[self._current_trajectory_index])
+        if (self.get_image(self._current_trajectory_index, self._current_initial_frame + self._time_steps) is None):
+            self._set_next_trajectory()
+
+        for j in range(self._batch_size):
+            img_stacked_series = []
+            labels_series = []
+            for i in range(self._current_initial_frame, self._current_initial_frame + self._time_steps):
+                img1 = self.get_image(self._current_trajectories[self._current_trajectory_index], i)
+                img2 = self.get_image(self._current_trajectories[self._current_trajectory_index], i+1)
+                img_aug = np.stack([img1, img2], -1)
+                img_stacked_series.append(img_aug)
+                if self._pose_size == 3:
+                    pose = poses[i,9:self._pose_size+9]
+                else:
+                    pose = get_ground_6d_poses(poses[i,:])
+                labels_series.append(pose)
+            img_batch.append(img_stacked_series)
+            label_batch.append(labels_series)
+            self._current_initial_frame += self._time_steps
+        img_batch = tf.unstack(np.array(img_batch), self._time_steps, axis = 1)
+        label_batch = tf.unstack(np.array(label_batch), self._time_steps, axis = 1)
+        self._current_initial_frame += self._time_steps
+        return img_batch, label_batch
 
 # Config class
 class Config(object):
     """configuration of RNN """
-    def __init__(self, lstm_hidden_size=1000, lstm_num_layers=2, batch_size=1, num_steps= 20, learning_rate=0.001, only_position=True):
+    def __init__(self, lstm_hidden_size=1000, lstm_num_layers=2, batch_size=1, num_steps= 20, learning_rate=0.001, only_position=True, time_steps=100):
         self.hidden_size = lstm_hidden_size
         self.num_layers = lstm_num_layers
         self.batch_size = batch_size
         self.num_steps = num_steps
         self.learning_rate = learning_rate
         self.only_position = only_position
+        self.time_steps = time_steps
 
-def main(num_frames=10, is_training=True):
-    config = Config(lstm_hidden_size=LSTM_HIDDEN_SIZE, lstm_num_layers=LSTM_NUM_LAYERS)
+def main():
+    """ main function """
+
     # configuration
-    timesteps = num_frames
+    config = Config(lstm_hidden_size=LSTM_HIDDEN_SIZE, lstm_num_layers=LSTM_NUM_LAYERS,
+            time_steps=TIME_STEPS, num_steps=NUM_TRAIN_STEPS, batch_size=BATCH_SIZE)
+    kitty_data = Kitty(config)
     if not config.only_position:
         pose_size = 6
     else:
@@ -210,49 +275,88 @@ def main(num_frames=10, is_training=True):
     height, width, channels = 376, 1241, 2
 
     # placeholder for input
-    input_data = tf.placeholder(tf.float32, [timesteps, None, height, width, channels])
-    input_ = tf.unstack(input_data, timesteps, 0)
-    # placeholder for labels
-    labels_ = tf.placeholder(tf.float32, [None, pose_size])
+    with tf.name_scope('input'):
+        input_data = tf.placeholder(tf.float32, [config.time_steps, None, height, width, channels])
+        # placeholder for labels
+        labels_ = tf.placeholder(tf.float32, [config.time_steps, None, pose_size])
 
-    # Building the RCNN Network
-    (output, _)  = build_rcnn_graph(config, input_, is_training)
+    with tf.name_scope('unstacked_input'):
+        # Unstacking the input into list of time series
+        input_ = tf.unstack(input_data, config.time_steps, 0)
+        # Unstacking the labels into the time series
+        pose_labels = tf.unstack(labels_, config.time_steps, 0)
+
+
+    # Building the RCNN Network which
+    # which returns the time series of output layers
+    with tf.name_scope('RCNN'):
+        (outputs, _)  = build_rcnn_graph(config, input_)
 
     # Output layer to compute the output
-    regression_w = tf.get_variable('regression_w', shape=[config.hidden_size, pose_size], dtype=tf.float32)
-    regression_b = tf.get_variable("regression_b", shape=[pose_size], dtype=tf.float32)
+    with tf.name_scope('weights'):
+        regression_w = tf.get_variable('regression_w', shape=[config.hidden_size, pose_size], dtype=tf.float32)
+    with tf.name_scope('biases'):
+        regression_b = tf.get_variable("regression_b", shape=[pose_size], dtype=tf.float32)
 
     # Pose estimate by multiplication with RCNN_output and Output layer
-    pose_estimated = [tf.nn.xw_plus_b(output[i], regression_w, regression_b) for i in range(output.shape[0])]
-    pose_estimated = tf.reshape(tf.convert_to_tensor(pose_estimated), [num_frames, pose_size])
+    with tf.name_scope('Wx_plus_b'):
+        pose_estimated = [tf.nn.xw_plus_b(output_state, regression_w, regression_b) for output_state in outputs]
 
-    print pose_estimated.shape
+    # Converting the list of tensor into a tensor
+    # Probably this is the part that is unnecessary and causing problems (slowing down the computations)
+    # pose_estimated = tf.reshape(tf.convert_to_tensor(pose_estimated), [num_frames, pose_size])
+
     # Loss function for all the frames in a batch
-    loss_op = tf.reduce_sum(tf.square(pose_estimated - labels_[:num_frames,:]))
+    with tf.name_scope('loss_l2_norm'):
+        losses = [pos_est_i - pos_lab_i for pos_est_i, pos_lab_i in zip(pose_estimated, pose_labels)]
+        loss_op = tf.reduce_sum(tf.square(losses))
+        tf.summary.scalar('loss_l2_norm', loss_op)
 
     #optimizer
-    optimizer = tf.train.GradientDescentOptimizer(learning_rate=config.learning_rate)
-    train_op = optimizer.minimize(loss_op)
+    with tf.name_scope('train'):
+        optimizer = tf.train.GradientDescentOptimizer(learning_rate=config.learning_rate)
+        train_op = optimizer.minimize(loss_op)
 
-    # Start training
+    # Merge all the summeries and write them out to model_dir
+    # by default ./model_dir
+    merged = tf.summary.merge_all()
     with tf.Session() as sess:
+        train_writer = tf.summary.FileWriter('./model_dir/train', sess.graph)
+        test_writer = tf.summary.FileWriter('./model_dir/test')
         # Initialize the variables (i.e. assign their default value)
         init = tf.global_variables_initializer()
         # Run the initializer
         sess.run(init)
-        for step in range(1, config.num_steps+1):
-            batch_x, batch_y = import_dataset(num_frames=num_frames, pose_size=pose_size)
-            print batch_x.shape
-            # Run optimization op (backprop)
-            sess.run(train_op, feed_dict={input_data: batch_x, labels_: batch_y})
-            if step % 200 == 0 or step == 1:
-                # Calculate batch loss and accuracy
-                loss = sess.run(loss_op, feed_dict={input_data: batch_x,
-                    labels_: batch_y})
-                print("Step " + str(step) + ", Minibatch Loss= " + \
-                      "{:.4f}".format(loss) + ", Training Accuracy= ")
+        #print("Optimization Finished!")
+        # Training and Testing Loop
+        for i in range(config.num_steps):
+            if i % 10 == 0:  # Record summaries and test-set accuracy
+                batch_x, batch_y = kitty_data.get_next_batch(isTraining=False)
+                summary, acc = sess.run(
+                        [merged, loss_op], feed_dict={input_data:batch_x, labels_:batch_y})
+                test_writer.add_summary(summary, i)
+                print('Accuracy at step %s: %s' % (i, acc))
+            else:  # Record train set summaries, and train
+                if i % 100 == 99:  # Record execution stats
+                    run_options = tf.RunOptions(
+                        trace_level=tf.RunOptions.FULL_TRACE)
+                    run_metadata = tf.RunMetadata()
+                    batch_x, batch_y = kitty_data.get_next_batch(isTraining=False)
+                    summary, _ = sess.run([merged, train_op],
+                            feed_dict={input_data:batch_x, labels_:batch_y},
+                            options=run_options,
+                            run_metadata=run_metadata)
+                    train_writer.add_run_metadata(run_metadata, 'step%03d' % i)
+                    train_writer.add_summary(summary, i)
+                    print('Adding run metadata for', i)
+                else:  # Record a summary
+                    batch_x, batch_y = kitty_data.get_next_batch(isTraining=False)
+                    summary, _ = sess.run(
+                        [merged, train_op], feed_dict={input_data:batch_x, labels_:batch_y})
+                    train_writer.add_summary(summary, i)
+        train_writer.close()
+        test_writer.close()
 
-        print("Optimization Finished!")
 
 if __name__ == "__main__":
     main()
