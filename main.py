@@ -171,10 +171,8 @@ class Kitty(object):
     def __init__(self, config, data_dir='/Users/Shrinath/visual-odometry/dataset/', isTraining=True):
         self._config = config
         self._data_dir= data_dir
-        self._batch_size = config.batch_size
         self._current_initial_frame = 0
         self._current_trajectory_index = 0
-        self._time_steps = config.time_steps
         self._current_epoch = 0
         self._training_trajectories = [0, 2, 8, 9]
         self._test_trajectories = [1, 3, 4, 5, 6, 7]
@@ -222,13 +220,13 @@ class Kitty(object):
             self._current_trajectories = self._test_trajectories
 
         poses = self.get_poses(self._current_trajectories[self._current_trajectory_index])
-        if (self.get_image(self._current_trajectory_index, self._current_initial_frame + self._time_steps) is None):
+        if (self.get_image(self._current_trajectory_index, self._current_initial_frame + self._config.time_steps) is None):
             self._set_next_trajectory()
 
-        for j in range(self._batch_size):
+        for j in range(self._config.batch_size):
             img_stacked_series = []
             labels_series = []
-            for i in range(self._current_initial_frame, self._current_initial_frame + self._time_steps):
+            for i in range(self._current_initial_frame, self._current_initial_frame + self._config.time_steps):
                 img1 = self.get_image(self._current_trajectories[self._current_trajectory_index], i)
                 img2 = self.get_image(self._current_trajectories[self._current_trajectory_index], i+1)
                 img_aug = np.stack([img1, img2], -1)
@@ -240,10 +238,10 @@ class Kitty(object):
                 labels_series.append(pose)
             img_batch.append(img_stacked_series)
             label_batch.append(labels_series)
-            self._current_initial_frame += self._time_steps
-        img_batch = tf.unstack(np.array(img_batch), self._time_steps, axis = 1)
-        label_batch = tf.unstack(np.array(label_batch), self._time_steps, axis = 1)
-        self._current_initial_frame += self._time_steps
+            self._current_initial_frame += self._config.time_steps
+        img_batch = np.reshape(np.array(img_batch), [self._config.time_steps, self._config.batch_size, self._img_height, self._img_width, 2])
+        label_batch = np.reshape(np.array(label_batch), [self._config.time_steps, self._config.batch_size, self._pose_size])
+        self._current_initial_frame += self._config.time_steps
         return img_batch, label_batch
 
 # Config class
@@ -360,3 +358,19 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    """
+    # Test Code for checking feeding mechanism
+    config = Config(lstm_hidden_size=LSTM_HIDDEN_SIZE, lstm_num_layers=LSTM_NUM_LAYERS,
+            time_steps=TIME_STEPS, num_steps=NUM_TRAIN_STEPS, batch_size=BATCH_SIZE)
+    kitty_data = Kitty(config)
+    batch_x, batch_y = kitty_data.get_next_batch(isTraining=False)
+    print batch_x.shape
+    height, width, channels = 376, 1241, 2
+    with tf.name_scope('input'):
+        input_data = tf.placeholder(tf.float32, [config.time_steps, None, height, width, channels])
+        # placeholder for labels
+        labels_ = tf.placeholder(tf.float32, [config.time_steps, None, 3])
+    with tf.Session() as sess:
+        sess.run([input_data, labels_], feed_dict={input_data:batch_x, labels_:batch_y})
+    """
