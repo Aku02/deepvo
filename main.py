@@ -315,6 +315,8 @@ def main():
         optimizer = tf.train.GradientDescentOptimizer(learning_rate=config.learning_rate)
         train_op = optimizer.minimize(loss_op)
 
+    saver = tf.train.Saver()
+
     # Merge all the summeries and write them out to model_dir
     # by default ./model_dir
     merged = tf.summary.merge_all()
@@ -352,6 +354,8 @@ def main():
                     summary, _ = sess.run(
                         [merged, train_op], feed_dict={input_data:batch_x, labels_:batch_y})
                     train_writer.add_summary(summary, i)
+        save_path = saver.save(sess, "./model_dir/model")
+        print("Model saved in file: %s" % save_path)
         train_writer.close()
         test_writer.close()
 
