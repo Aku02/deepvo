@@ -1,5 +1,5 @@
 # Code Skeleton - Inspired by Tensoflow RNN tutorial: ptb_word_lm.py
-
+import os
 import numpy as np
 import tensorflow as tf
 import cv2
@@ -9,10 +9,11 @@ import warnings
 
 """ Hyper Parameters for learning"""
 LEARNING_RATE = 0.001
-BATCH_SIZE = 5
+BATCH_SIZE = 10
 LSTM_HIDDEN_SIZE = 1000
 LSTM_NUM_LAYERS = 2
-NUM_TRAIN_STEPS = 1000
+# global training steps
+NUM_TRAIN_STEPS = 6000
 TIME_STEPS = 5
 
 
@@ -238,7 +239,9 @@ class Kitty(object):
         for j in range(self._config.batch_size):
             img_stacked_series = []
             labels_series = []
-            print('In Range : %d for %d timesteps '%(self._current_initial_frame, self._config.time_steps))
+            if (self.get_image(self._current_trajectories[self._current_trajectory_index], self._current_initial_frame + self._config.time_steps) is None):
+                self._set_next_trajectory(isTraining)
+            #print('In Range : %d for %d timesteps '%(self._current_initial_frame, self._config.time_steps))
             for i in range(self._current_initial_frame, self._current_initial_frame + self._config.time_steps):
                 img1 = self.get_image(self._current_trajectories[self._current_trajectory_index], i)
                 img2 = self.get_image(self._current_trajectories[self._current_trajectory_index], i+1)
@@ -252,7 +255,6 @@ class Kitty(object):
             img_batch.append(img_stacked_series)
             label_batch.append(labels_series)
             self._current_initial_frame += self._config.time_steps
-        print np.array(img_batch).shape
         img_batch = np.reshape(np.array(img_batch), [self._config.time_steps, self._config.batch_size, self._img_height, self._img_width, 2])
         label_batch = np.reshape(np.array(label_batch), [self._config.time_steps, self._config.batch_size, self._pose_size])
         return img_batch, label_batch
@@ -268,6 +270,18 @@ class Config(object):
         self.learning_rate = learning_rate
         self.only_position = only_position
         self.time_steps = time_steps
+
+def find_global_step():
+    model_dir = './model_dir/'
+    if os.path.isdir(model_dir):
+        metafiles = [f for f in os.listdir(model_dir) if
+                (os.path.isfile(os.path.join(model_dir, f)) and f.endswith(".meta"))]
+        if metafiles:
+            metafiles = sorted(metafiles)
+            global_step = int(metafiles[-1][11:-5])
+    else:
+        global_step = 0
+    return global_step
 
 def main():
     """ main function """
@@ -339,11 +353,28 @@ def main():
     # Merge all the summeries and write them out to model_dir
     # by default ./model_dir
     merged = tf.summary.merge_all()
-    #tf.reset_default_graph()
-    #imported_meta = tf.train.import_meta_graph("./model_dir/model.meta")
+    global_step = find_global_step()
+    if (global_step != 0):
+        tf.reset_default_graph()
+        if global_step == (config.num_steps - 1):
+            imported_meta = tf.train.import_meta_graph("./model_dir/model.meta")
+        else:
+            imported_meta = tf.train.import_meta_graph("./model_dir/model_iter-%02d" % global_step + ".meta")
+        # placeholder for input
+        with tf.name_scope('input'):
+            input_data = tf.placeholder(tf.float32, [config.time_steps, None, height, width, channels])
+            # placeholder for labels
+            labels_ = tf.placeholder(tf.float32, [config.time_steps, None, pose_size])
+
+        with tf.name_scope('unstacked_input'):
+            # Unstacking the input into list of time series
+            input_ = tf.unstack(input_data, config.time_steps, 0)
+            # Unstacking the labels into the time series
+            pose_labels = tf.unstack(labels_, config.time_steps, 0)
 
     with tf.Session() as sess:
-        #imported_meta.restore(sess, tf.train.latest_checkpoint('./model_dir/'))
+        if (global_step != 0):
+            imported_meta.restore(sess, tf.train.latest_checkpoint('./model_dir/'))
         train_writer = tf.summary.FileWriter('./model_dir/train', sess.graph)
         test_writer = tf.summary.FileWriter('./model_dir/test')
         # Initialize the variables (i.e. assign their default value)
@@ -352,7 +383,7 @@ def main():
         sess.run(init)
         #print("Optimization Finished!")
         # Training and Testing Loop
-        for i in range(config.num_steps):
+        for i in range(global_step, config.num_steps):
             print('step : %d'%i)
             if i % 10 == 0:  # Record summaries and test-set accuracy
                 batch_x, batch_y = kitty_data.get_next_batch(isTraining=False)
@@ -393,11 +424,12 @@ if __name__ == "__main__":
     main()
 
     """
+    print find_global_step()
     # Test Code for checking feeding mechanism
     config = Config(lstm_hidden_size=LSTM_HIDDEN_SIZE, lstm_num_layers=LSTM_NUM_LAYERS,
-            time_steps=100, num_steps=NUM_TRAIN_STEPS, batch_size=BATCH_SIZE)
+            time_steps=TIME_STEPS, num_steps=NUM_TRAIN_STEPS, batch_size=BATCH_SIZE)
     kitty_data = Kitty(config)
-    for i in range(100):
+    for i in range(config.num_steps):
         batch_x, batch_y = kitty_data.get_next_batch(isTraining=False)
         height, width, channels = 376, 1241, 2
     print('epochs: %d'%kitty_data._current_train_epoch)
