@@ -13,7 +13,7 @@ BATCH_SIZE = 1
 LSTM_HIDDEN_SIZE = 1000
 LSTM_NUM_LAYERS = 2
 NUM_TRAIN_STEPS = 1000
-TIME_STEPS = 100
+TIME_STEPS = 5
 
 
 def isRotationMatrix(R):
@@ -172,7 +172,6 @@ class Kitty(object):
         self._config = config
         self._data_dir= data_dir
         self._img_height, self._img_width = self.get_image(0,0).shape
-        print self._img_width, self._img_height
         self._current_initial_frame = 0
         self._current_trajectory_index = 0
         self._prev_trajectory_index = 0
@@ -322,6 +321,12 @@ def main():
 
     #optimizer
     with tf.name_scope('train'):
+        #optimizer = tf.train.AdamOptimizer(learning_rate=config.learning_rate,
+        #        beta1=0.9,
+        #        beta2=0.999,
+        #        epsilon=1e-08,
+        #        use_locking=False,
+        #        name='Adam')
         optimizer = tf.train.GradientDescentOptimizer(learning_rate=config.learning_rate)
         train_op = optimizer.minimize(loss_op)
 
@@ -365,7 +370,7 @@ def main():
                     summary, _ = sess.run(
                         [merged, train_op], feed_dict={input_data:batch_x, labels_:batch_y})
                     train_writer.add_summary(summary, i)
-                    train_loss = sess.run(loss,
+                    train_loss = sess.run(loss_op,
                             feed_dict={input_data:batch_x, labels_:batch_y})
                     print('Train_error at step %s: %s' % (i, train_loss))
         save_path = saver.save(sess, "./model_dir/model")
