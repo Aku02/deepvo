@@ -9,7 +9,7 @@ import warnings
 
 """ Hyper Parameters for learning"""
 LEARNING_RATE = 0.001
-BATCH_SIZE = 1
+BATCH_SIZE = 5
 LSTM_HIDDEN_SIZE = 1000
 LSTM_NUM_LAYERS = 2
 NUM_TRAIN_STEPS = 1000
@@ -175,9 +175,10 @@ class Kitty(object):
         self._current_initial_frame = 0
         self._current_trajectory_index = 0
         self._prev_trajectory_index = 0
-        self._current_epoch = 0
+        self._current_train_epoch = 0
+        self._current_test_epoch = 0
         self._training_trajectories = [0, 2, 8, 9]
-        self._test_trajectories = [1, 3]
+        self._test_trajectories = [1, 3, 4, 5, 6, 7]
         if isTraining:
             self._current_trajectories = self._training_trajectories
         else:
@@ -201,7 +202,7 @@ class Kitty(object):
             poses = np.array([[float(x) for x in line.split()] for line in f])
         return poses
 
-    def _set_next_trajectory(self):
+    def _set_next_trajectory(self, isTraining):
         print 'in _set_next_trajectory, current_trj_index is %d'%self._current_trajectory_index
         if (self._current_trajectory_index < len(self._current_trajectories)-1):
             self._prev_trajectory_index = self._current_trajectory_index
@@ -209,7 +210,10 @@ class Kitty(object):
             self._current_initial_frame = 0
         else:
             print 'New Epoch Started'
-            self._current_epoch += 1
+            if isTraining:
+                self._current_train_epoch += 1
+            else:
+                self._current_test_epoch += 1
             self._prev_trajectory_index = self._current_trajectory_index
             self._current_trajectory_index = 0
             self._current_initial_frame = 0
@@ -227,7 +231,7 @@ class Kitty(object):
 
         poses = self.get_poses(self._current_trajectories[self._current_trajectory_index])
         if (self.get_image(self._current_trajectories[self._current_trajectory_index], self._current_initial_frame + self._config.time_steps) is None):
-            self._set_next_trajectory()
+            self._set_next_trajectory(isTraining)
 
         print('Current Trajectory is : %d'%self._current_trajectory_index)
 
@@ -247,10 +251,10 @@ class Kitty(object):
                 labels_series.append(pose)
             img_batch.append(img_stacked_series)
             label_batch.append(labels_series)
+            self._current_initial_frame += self._config.time_steps
         print np.array(img_batch).shape
         img_batch = np.reshape(np.array(img_batch), [self._config.time_steps, self._config.batch_size, self._img_height, self._img_width, 2])
         label_batch = np.reshape(np.array(label_batch), [self._config.time_steps, self._config.batch_size, self._pose_size])
-        self._current_initial_frame += self._config.time_steps
         return img_batch, label_batch
 
 # Config class
@@ -335,7 +339,11 @@ def main():
     # Merge all the summeries and write them out to model_dir
     # by default ./model_dir
     merged = tf.summary.merge_all()
+    #tf.reset_default_graph()
+    #imported_meta = tf.train.import_meta_graph("./model_dir/model.meta")
+
     with tf.Session() as sess:
+        #imported_meta.restore(sess, tf.train.latest_checkpoint('./model_dir/'))
         train_writer = tf.summary.FileWriter('./model_dir/train', sess.graph)
         test_writer = tf.summary.FileWriter('./model_dir/test')
         # Initialize the variables (i.e. assign their default value)
@@ -373,9 +381,10 @@ def main():
                     train_loss = sess.run(loss_op,
                             feed_dict={input_data:batch_x, labels_:batch_y})
                     print('Train_error at step %s: %s' % (i, train_loss))
+            saver.save(sess, './model_dir/model_iter', global_step=i)
         save_path = saver.save(sess, "./model_dir/model")
         print("Model saved in file: %s" % save_path)
-        print("epochs run: " + str(kitty_data._current_epoch))
+        print("epochs trained: " + str(kitty_data._current_train_epoch))
         train_writer.close()
         test_writer.close()
 
@@ -391,7 +400,7 @@ if __name__ == "__main__":
     for i in range(100):
         batch_x, batch_y = kitty_data.get_next_batch(isTraining=False)
         height, width, channels = 376, 1241, 2
-    print('epochs: %d'%kitty_data._current_epoch)
+    print('epochs: %d'%kitty_data._current_train_epoch)
     with tf.name_scope('input'):
         input_data = tf.placeholder(tf.float32, [config.time_steps, None, height, width, channels])
         # placeholder for labels
