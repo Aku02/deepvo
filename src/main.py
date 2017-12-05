@@ -9,12 +9,12 @@ import warnings
 
 """ Hyper Parameters for learning"""
 LEARNING_RATE = 0.001
-BATCH_SIZE = 10
+BATCH_SIZE = 3
 LSTM_HIDDEN_SIZE = 1000
 LSTM_NUM_LAYERS = 2
 # global training steps
-NUM_TRAIN_STEPS = 6000
-TIME_STEPS = 5
+NUM_TRAIN_STEPS = 1500
+TIME_STEPS = 7
 
 
 def isRotationMatrix(R):
@@ -66,6 +66,7 @@ def build_rcnn_graph(config, input_):
     rnn_inputs = tf.convert_to_tensor(rnn_inputs)
     rnn_inputs = tf.reshape(rnn_inputs, [-1, max_time, 20*6*1024])
 
+    #config._initial_state = config.get_initial_state()
     # 'outputs' is a tensor of shape [batch_size, max_time, 1000]
     # 'state' is a N-tuple where N is the number of LSTMCells containing a
     # tf.contrib.rnn.LSTMStateTuple for each cell
@@ -178,8 +179,8 @@ class Kitty(object):
         self._prev_trajectory_index = 0
         self._current_train_epoch = 0
         self._current_test_epoch = 0
-        self._training_trajectories = [0, 2, 8, 9]
-        self._test_trajectories = [1, 3, 4, 5, 6, 7]
+        self._training_trajectories = [0, 2]
+        self._test_trajectories = [1, 3]
         if isTraining:
             self._current_trajectories = self._training_trajectories
         else:
@@ -219,7 +220,6 @@ class Kitty(object):
             self._current_trajectory_index = 0
             self._current_initial_frame = 0
 
-
     def get_next_batch(self, isTraining):
         """ Function that returns the batch for dataset
         """
@@ -231,14 +231,12 @@ class Kitty(object):
             self._current_trajectories = self._test_trajectories
 
         poses = self.get_poses(self._current_trajectories[self._current_trajectory_index])
-        if (self.get_image(self._current_trajectories[self._current_trajectory_index], self._current_initial_frame + self._config.time_steps) is None):
-            self._set_next_trajectory(isTraining)
-
-        print('Current Trajectory is : %d'%self._current_trajectory_index)
 
         for j in range(self._config.batch_size):
             img_stacked_series = []
             labels_series = []
+            print('Current Trajectory is : %d'% self._current_trajectories[self._current_trajectory_index])
+
             if (self.get_image(self._current_trajectories[self._current_trajectory_index], self._current_initial_frame + self._config.time_steps) is None):
                 self._set_next_trajectory(isTraining)
             #print('In Range : %d for %d timesteps '%(self._current_initial_frame, self._config.time_steps))
@@ -278,17 +276,21 @@ def find_global_step():
                 (os.path.isfile(os.path.join(model_dir, f)) and f.endswith(".meta"))]
         if metafiles:
             metafiles = sorted(metafiles)
-            global_step = int(metafiles[-1][11:-5])
+            if metafiles[-1][11:-5] == "":
+                global_step = 575
+            else:
+                global_step = int(metafiles[-1][11:-5])
+            resume_Training = True
     else:
         global_step = 0
-    return global_step
+        resume_Training = False
+    return global_step, resume_Training
 
 def main():
     """ main function """
-
-    # configuration
     config = Config(lstm_hidden_size=LSTM_HIDDEN_SIZE, lstm_num_layers=LSTM_NUM_LAYERS,
             time_steps=TIME_STEPS, num_steps=NUM_TRAIN_STEPS, batch_size=BATCH_SIZE)
+    # configuration
     kitty_data = Kitty(config)
     if not config.only_position:
         pose_size = 6
@@ -299,69 +301,25 @@ def main():
     # only for gray scale dataset, for colored channels will be 6
     height, width, channels = 376, 1241, 2
 
-    # placeholder for input
-    with tf.name_scope('input'):
-        input_data = tf.placeholder(tf.float32, [config.time_steps, None, height, width, channels])
-        # placeholder for labels
-        labels_ = tf.placeholder(tf.float32, [config.time_steps, None, pose_size])
-
-    with tf.name_scope('unstacked_input'):
-        # Unstacking the input into list of time series
-        input_ = tf.unstack(input_data, config.time_steps, 0)
-        # Unstacking the labels into the time series
-        pose_labels = tf.unstack(labels_, config.time_steps, 0)
-
-
-    # Building the RCNN Network which
-    # which returns the time series of output layers
-    with tf.name_scope('RCNN'):
-        (outputs, _)  = build_rcnn_graph(config, input_)
-
-    # Output layer to compute the output
-    with tf.name_scope('weights'):
-        regression_w = tf.get_variable('regression_w', shape=[config.hidden_size, pose_size], dtype=tf.float32)
-    with tf.name_scope('biases'):
-        regression_b = tf.get_variable("regression_b", shape=[pose_size], dtype=tf.float32)
-
-    # Pose estimate by multiplication with RCNN_output and Output layer
-    with tf.name_scope('Wx_plus_b'):
-        pose_estimated = [tf.nn.xw_plus_b(output_state, regression_w, regression_b) for output_state in outputs]
-
-    # Converting the list of tensor into a tensor
-    # Probably this is the part that is unnecessary and causing problems (slowing down the computations)
-    # pose_estimated = tf.reshape(tf.convert_to_tensor(pose_estimated), [num_frames, pose_size])
-
-    # Loss function for all the frames in a batch
-    with tf.name_scope('loss_l2_norm'):
-        losses = [pos_est_i - pos_lab_i for pos_est_i, pos_lab_i in zip(pose_estimated, pose_labels)]
-        loss_op = tf.reduce_sum(tf.square(losses))
-        tf.summary.scalar('loss_l2_norm', loss_op)
-
-    #optimizer
-    with tf.name_scope('train'):
-        #optimizer = tf.train.AdamOptimizer(learning_rate=config.learning_rate,
-        #        beta1=0.9,
-        #        beta2=0.999,
-        #        epsilon=1e-08,
-        #        use_locking=False,
-        #        name='Adam')
-        optimizer = tf.train.GradientDescentOptimizer(learning_rate=config.learning_rate)
-        train_op = optimizer.minimize(loss_op)
-
-    saver = tf.train.Saver()
-
-    # Merge all the summeries and write them out to model_dir
-    # by default ./model_dir
-    merged = tf.summary.merge_all()
-    global_step = find_global_step()
-    if (global_step != 0):
+    global_step, resume_Training = find_global_step()
+    if resume_Training:
         tf.reset_default_graph()
-        if global_step == (config.num_steps - 1):
-            imported_meta = tf.train.import_meta_graph("./model_dir/model.meta")
-        else:
-            imported_meta = tf.train.import_meta_graph("./model_dir/model_iter-%02d" % global_step + ".meta")
-        # placeholder for input
+        imported_meta = tf.train.import_meta_graph("./model_dir/model.meta")
+        #if global_step == (config.num_steps - 1):
+        #    imported_meta = tf.train.import_meta_graph("./model_dir/model.meta")
+        #else:
+        #    imported_meta = tf.train.import_meta_graph("./model_dir/model_iter-%02d" % global_step + ".meta")
+
+        input_data = tf.get_default_graph().get_tensor_by_name("input/Placeholder:0")
+        # placeholder for labels
+        labels_ = tf.get_default_graph().get_tensor_by_name("input/Placeholder_1:0")
+        loss_op = tf.get_default_graph().get_tensor_by_name("loss_l2_norm/Sum:0")
+        tf.summary.scalar('loss_l2_norm', loss_op)
+        train_op = tf.get_default_graph().get_operation_by_name("train/Adam")
+        merged = tf.summary.merge_all()
+    else:
         with tf.name_scope('input'):
+            # placeholder for input
             input_data = tf.placeholder(tf.float32, [config.time_steps, None, height, width, channels])
             # placeholder for labels
             labels_ = tf.placeholder(tf.float32, [config.time_steps, None, pose_size])
@@ -371,6 +329,48 @@ def main():
             input_ = tf.unstack(input_data, config.time_steps, 0)
             # Unstacking the labels into the time series
             pose_labels = tf.unstack(labels_, config.time_steps, 0)
+
+
+        # Building the RCNN Network which
+        # which returns the time series of output layers
+        with tf.name_scope('RCNN'):
+            (outputs, _)  = build_rcnn_graph(config, input_)
+
+        # Output layer to compute the output
+        with tf.name_scope('weights'):
+            regression_w = tf.get_variable('regression_w', shape=[config.hidden_size, pose_size], dtype=tf.float32)
+        with tf.name_scope('biases'):
+            regression_b = tf.get_variable("regression_b", shape=[pose_size], dtype=tf.float32)
+
+        # Pose estimate by multiplication with RCNN_output and Output layer
+        with tf.name_scope('Wx_plus_b'):
+            pose_estimated = [tf.nn.xw_plus_b(output_state, regression_w, regression_b) for output_state in outputs]
+
+        # Converting the list of tensor into a tensor
+        # Probably this is the part that is unnecessary and causing problems (slowing down the computations)
+        # pose_estimated = tf.reshape(tf.convert_to_tensor(pose_estimated), [num_frames, pose_size])
+
+        # Loss function for all the frames in a batch
+        with tf.name_scope('loss_l2_norm'):
+            losses = [pos_est_i - pos_lab_i for pos_est_i, pos_lab_i in zip(pose_estimated, pose_labels)]
+            loss_op = tf.reduce_sum(tf.square(losses))
+            tf.summary.scalar('loss_l2_norm', loss_op)
+
+        #optimizer
+        with tf.name_scope('train'):
+            optimizer = tf.train.AdamOptimizer(learning_rate=config.learning_rate,
+                    beta1=0.9,
+                    beta2=0.999,
+                    epsilon=1e-08,
+                    use_locking=False,
+                    name='Adam')
+            #optimizer = tf.train.GradientDescentOptimizer(learning_rate=config.learning_rate)
+            train_op = optimizer.minimize(loss_op)
+        # Merge all the summeries and write them out to model_dir
+        # by default ./model_dir
+        merged = tf.summary.merge_all()
+
+    saver = tf.train.Saver()
 
     with tf.Session() as sess:
         if (global_step != 0):
@@ -383,7 +383,7 @@ def main():
         sess.run(init)
         #print("Optimization Finished!")
         # Training and Testing Loop
-        for i in range(global_step, config.num_steps):
+        for i in range(global_step, global_step + config.num_steps):
             print('step : %d'%i)
             if i % 10 == 0:  # Record summaries and test-set accuracy
                 batch_x, batch_y = kitty_data.get_next_batch(isTraining=False)
@@ -396,7 +396,7 @@ def main():
                     run_options = tf.RunOptions(
                         trace_level=tf.RunOptions.FULL_TRACE)
                     run_metadata = tf.RunMetadata()
-                    batch_x, batch_y = kitty_data.get_next_batch(isTraining=False)
+                    batch_x, batch_y = kitty_data.get_next_batch(isTraining=True)
                     summary, _ = sess.run([merged, train_op],
                             feed_dict={input_data:batch_x, labels_:batch_y},
                             options=run_options,
@@ -405,14 +405,15 @@ def main():
                     train_writer.add_summary(summary, i)
                     print('Adding run metadata for', i)
                 else:  # Record a summary
-                    batch_x, batch_y = kitty_data.get_next_batch(isTraining=False)
+                    batch_x, batch_y = kitty_data.get_next_batch(isTraining=True)
                     summary, _ = sess.run(
                         [merged, train_op], feed_dict={input_data:batch_x, labels_:batch_y})
                     train_writer.add_summary(summary, i)
                     train_loss = sess.run(loss_op,
                             feed_dict={input_data:batch_x, labels_:batch_y})
                     print('Train_error at step %s: %s' % (i, train_loss))
-            saver.save(sess, './model_dir/model_iter', global_step=i)
+                if i % (config.num_steps/2) == 0:
+                    saver.save(sess, './model_dir/model_iter', global_step=i)
         save_path = saver.save(sess, "./model_dir/model")
         print("Model saved in file: %s" % save_path)
         print("epochs trained: " + str(kitty_data._current_train_epoch))
