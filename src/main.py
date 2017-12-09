@@ -1,20 +1,24 @@
 # Code Skeleton - Inspired by Tensoflow RNN tutorial: ptb_word_lm.py
 import os
+import sys
 import numpy as np
 import tensorflow as tf
 import cv2
 import math
 import warnings
+sys.path.append('../fn2')
+from src.flownet2 import test
+
 
 
 """ Hyper Parameters for learning"""
 LEARNING_RATE = 0.001
-BATCH_SIZE = 3
+BATCH_SIZE = 1
 LSTM_HIDDEN_SIZE = 1000
 LSTM_NUM_LAYERS = 2
 # global training steps
-NUM_TRAIN_STEPS = 1500
-TIME_STEPS = 7
+NUM_TRAIN_STEPS = 3000
+TIME_STEPS = 5
 
 
 def isRotationMatrix(R):
@@ -55,9 +59,9 @@ def build_rcnn_graph(config, input_):
     # create a RNN cell composed sequentially of a number of RNNCells
     multi_rnn_cell = tf.nn.rnn_cell.MultiRNNCell(rnn_layers)
 
-    rnn_inputs = [cnn_layers(stacked_img) for \
+    rnn_inputs = [get_optical_flow(stacked_img) for \
             stacked_img in input_]
-
+    print rnn_inputs.shape
     # Flattening the final convolution layers to feed them into RNN
     rnn_inputs = [tf.reshape(rnn_inputs[i],[-1, 20*6*1024]) for i in range(len(rnn_inputs))]
 
@@ -76,6 +80,22 @@ def build_rcnn_graph(config, input_):
     # Tensor shaped: [batch_size, max_time, cell.output_size]
     outputs = tf.unstack(outputs, max_time, axis=1)
     return outputs, state
+
+def get_optical_flow(stacked_img):
+    #unstack the stacked_img
+    input_a = stacked_img[:,:,:,:,1]
+    input_b = stacked_img[:,:,:,:,2]
+    # Create a new network
+    net = FlowNet2(mode=Mode.TEST)
+
+    # Train on the data
+    last_out = net.test(
+        checkpoint='./checkpoints/FlowNet2/flownet-2.ckpt-0',
+        input_a_path=input_a,
+        input_b_path=input_b,
+        )
+
+    return last_out
 
 def get_ground_6d_poses(cordinates):
     """ For 6dof pose representaion """
