@@ -6,8 +6,11 @@ import tensorflow as tf
 import cv2
 import math
 import warnings
+import argparse
 
-
+parser = argparse.ArgumentParser(description='Directory to save model')
+parser.add_argument('--model_dir', action="store", dest="model_dir", default='./model_dir')
+FLAGS = parser.parse_args()
 """ Hyper Parameters for learning"""
 LEARNING_RATE = 0.001
 BATCH_SIZE = 1
@@ -15,7 +18,8 @@ LSTM_HIDDEN_SIZE = 1000
 LSTM_NUM_LAYERS = 2
 # global training steps
 NUM_TRAIN_STEPS = 5000
-TIME_STEPS = 3
+TIME_STEPS = 5
+MODEL_DIR = FLAGS.model_dir
 
 
 def isRotationMatrix(R):
@@ -59,6 +63,7 @@ def build_rcnn_graph(config, input_):
     rnn_inputs = []
     reuse = None
     for stacked_img in input_:
+        print reuse
         rnn_inputs.append(cnn_layers(stacked_img, reuse=reuse))
         reuse = True
     # Flattening the final convolution layers to feed them into RNN
@@ -192,8 +197,8 @@ class Kitty(object):
         self._prev_trajectory_index = 0
         self._current_train_epoch = 0
         self._current_test_epoch = 0
-        self._training_trajectories = [0, 2]
-        self._test_trajectories = [1, 3]
+        self._training_trajectories = [0, 2, 8, 9]
+        self._test_trajectories = [1, 3, 5, 6]
         if isTraining:
             self._current_trajectories = self._training_trajectories
         else:
@@ -283,7 +288,7 @@ class Config(object):
         self.time_steps = time_steps
 
 def find_global_step():
-    model_dir = './model_dir/'
+    model_dir = MODEL_DIR
     if os.path.isdir(model_dir):
         metafiles = [f for f in os.listdir(model_dir) if
                 (os.path.isfile(os.path.join(model_dir, f)) and f.endswith(".meta"))]
@@ -320,7 +325,7 @@ def main():
     global_step, resume_Training = find_global_step()
     if resume_Training:
         tf.reset_default_graph()
-        imported_meta = tf.train.import_meta_graph("./model_dir/model.meta")
+        imported_meta = tf.train.import_meta_graph(MODEL_DIR + "model.meta")
         #if global_step == (config.num_steps - 1):
         #    imported_meta = tf.train.import_meta_graph("./model_dir/model.meta")
         #else:
@@ -386,13 +391,14 @@ def main():
         # by default ./model_dir
         merged = tf.summary.merge_all()
 
+    print([x.name for x in tf.global_variables()])
     saver = tf.train.Saver()
 
     with tf.Session() as sess:
         if (global_step != 0):
-            imported_meta.restore(sess, tf.train.latest_checkpoint('./model_dir/'))
-        train_writer = tf.summary.FileWriter('./model_dir/train', sess.graph)
-        test_writer = tf.summary.FileWriter('./model_dir/test')
+            imported_meta.restore(sess, tf.train.latest_checkpoint(MODEL_DIR))
+        train_writer = tf.summary.FileWriter(MODEL_DIR + 'train', sess.graph)
+        test_writer = tf.summary.FileWriter(MODEL_DIR + 'test')
         # Initialize the variables (i.e. assign their default value)
         init = tf.global_variables_initializer()
         # Run the initializer
@@ -428,9 +434,9 @@ def main():
                     train_loss = sess.run(loss_op,
                             feed_dict={input_data:batch_x, labels_:batch_y})
                     print('Train_error at step %s: %s' % (i, train_loss))
-                if i % (config.num_steps/2) == 0:
-                    saver.save(sess, './model_dir/model_iter', global_step=i)
-        save_path = saver.save(sess, "./model_dir/model")
+                if i % (config.num_steps/4) == 0:
+                    saver.save(sess, MODEL_DIR + 'model_iter', global_step=i)
+        save_path = saver.save(sess, MODEL_DIR + 'model')
         print("Model saved in file: %s" % save_path)
         print("epochs trained: " + str(kitty_data._current_train_epoch))
         train_writer.close()
