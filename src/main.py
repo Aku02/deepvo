@@ -6,20 +6,25 @@ import tensorflow as tf
 import cv2
 import math
 import warnings
-sys.path.append('../fn2')
-from src.flownet2 import test
+import argparse
+sys.path.append('fn2/')
+import src.flownet_s.flownet_s as fns
+from src.training_schedules import LONG_SCHEDULE
 
-
-
+parser = argparse.ArgumentParser(description='Directory to save model')
+parser.add_argument('--model_dir', action="store", dest="model_dir", default='./model_dir')
+FLAGS = parser.parse_args()
 """ Hyper Parameters for learning"""
 LEARNING_RATE = 0.001
 BATCH_SIZE = 1
 LSTM_HIDDEN_SIZE = 1000
 LSTM_NUM_LAYERS = 2
 # global training steps
-NUM_TRAIN_STEPS = 3000
+NUM_TRAIN_STEPS = 5000
 TIME_STEPS = 5
-
+MODEL_DIR = FLAGS.model_dir
+# FlowNetS Parameters
+Mode = fns.Mode
 
 def isRotationMatrix(R):
     """ Checks if a matrix is a valid rotation matrix
@@ -50,7 +55,7 @@ def rotationMatrixToEulerAngles(R):
 
     return np.array([x, y, z])
 
-def build_rcnn_graph(config, input_):
+def build_rcnn_graph(config, input_, sess):
     """ CNN layers connected to RNN which connects to final output """
 
     # create 2 LSTMCells
@@ -59,9 +64,12 @@ def build_rcnn_graph(config, input_):
     # create a RNN cell composed sequentially of a number of RNNCells
     multi_rnn_cell = tf.nn.rnn_cell.MultiRNNCell(rnn_layers)
 
-    rnn_inputs = [get_optical_flow(stacked_img) for \
-            stacked_img in input_]
-    print rnn_inputs.shape
+    rnn_inputs = []
+    reuse = None
+    for stacked_img in input_:
+        print reuse
+        rnn_inputs.append(get_optical_flow(stacked_img, reuse=reuse, sess=sess))
+        reuse = True
     # Flattening the final convolution layers to feed them into RNN
     rnn_inputs = [tf.reshape(rnn_inputs[i],[-1, 20*6*1024]) for i in range(len(rnn_inputs))]
 
@@ -81,27 +89,11 @@ def build_rcnn_graph(config, input_):
     outputs = tf.unstack(outputs, max_time, axis=1)
     return outputs, state
 
-def get_optical_flow(stacked_img):
-    #unstack the stacked_img
-    input_a = stacked_img[:,:,:,:,1]
-    input_b = stacked_img[:,:,:,:,2]
-    # Create a new network
-    net = FlowNet2(mode=Mode.TEST)
-
-    # Train on the data
-    last_out = net.test(
-        checkpoint='./checkpoints/FlowNet2/flownet-2.ckpt-0',
-        input_a_path=input_a,
-        input_b_path=input_b,
-        )
-
-    return last_out
-
 def get_ground_6d_poses(cordinates):
     """ For 6dof pose representaion """
     pass
 
-def cnn_layers(input_layer):
+def cnn_layers(input_layer, reuse = None):
         """ input: input_layer of concatonated images (img, img_next) where \
                 shape of each imgae is (1280, 384, 3)
             output: 6th convolutional layer
@@ -117,75 +109,108 @@ def cnn_layers(input_layer):
         # Padding is added to preserve width and height.
         # Input Tensor Shape: [batch_size, 1280, 384, 1]
         # Output Tensor Shape: [batch_size, 1280, 384, 32]
-        conv1 = tf.layers.conv2d(
-            inputs=input_layer,
-            filters=64,
-            kernel_size=[7, 7],
-            padding="same",
-            strides=2,
-            activation=tf.nn.relu)
-        # Pooling Layer #1
-        # First max pooling layer with a 2x2 filter and stride of 2
-        # Input Tensor Shape: [batch_size, 1280, 384, 64]
-        # Output Tensor Shape: [batch_size, 640, 192, 64]
-        conv2 = tf.layers.conv2d(
-                inputs=conv1,
-                filters=128,
-                kernel_size=[5, 5],
-                padding ="same",
+        with tf.variable_scope("cnns", reuse=reuse):
+            conv1 = tf.layers.conv2d(
+                inputs=input_layer,
+                filters=64,
+                kernel_size=[7, 7],
+                padding="same",
                 strides=2,
-                activation=tf.nn.relu)
-        conv3 = tf.layers.conv2d(
-                inputs=conv2,
-                filters=256,
-                kernel_size=[5, 5],
-                padding ="same",
-                strides=2,
-                activation=tf.nn.relu)
-        conv3_1 = tf.layers.conv2d(
-                inputs=conv3,
-                filters=256,
-                kernel_size=[3, 3],
-                padding ="same",
-                strides=1,
-                activation=tf.nn.relu)
-        conv4 = tf.layers.conv2d(
-                inputs=conv3_1,
-                filters=512,
-                kernel_size=[3, 3],
-                padding ="same",
-                strides=2,
-                activation=tf.nn.relu)
-        conv4_1 = tf.layers.conv2d(
-                inputs=conv4,
-                filters=512,
-                kernel_size=[3, 3],
-                padding ="same",
-                strides=1,
-                activation=tf.nn.relu)
-        conv5 = tf.layers.conv2d(
-                inputs=conv4_1,
-                filters=512,
-                kernel_size=[3, 3],
-                padding ="same",
-                strides=2,
-                activation=tf.nn.relu)
-        conv5_1 = tf.layers.conv2d(
-                inputs=conv5,
-                filters=512,
-                kernel_size=[3, 3],
-                padding ="same",
-                strides=1,
-                activation=tf.nn.relu)
-        output = tf.layers.conv2d(
-                inputs=conv5_1,
-                filters=1024,
-                kernel_size=[3, 3],
-                padding ="same",
-                strides=2)
-        """ The output is connected to RNN
-        """
+                reuse = reuse,
+                activation=tf.nn.relu, name='cnv1')
+            # Pooling Layer #1
+            # First max pooling layer with a 2x2 filter and stride of 2
+            # Input Tensor Shape: [batch_size, 1280, 384, 64]
+            # Output Tensor Shape: [batch_size, 640, 192, 64]
+            conv2 = tf.layers.conv2d(
+                    inputs=conv1,
+                    filters=128,
+                    kernel_size=[5, 5],
+                    padding ="same",
+                    strides=2,
+                    reuse = reuse,
+                    activation=tf.nn.relu, name='cnv2')
+            conv3 = tf.layers.conv2d(
+                    inputs=conv2,
+                    filters=256,
+                    kernel_size=[5, 5],
+                    padding ="same",
+                    strides=2,
+                    reuse = reuse,
+                    activation=tf.nn.relu, name='cnv3')
+            conv3_1 = tf.layers.conv2d(
+                    inputs=conv3,
+                    filters=256,
+                    kernel_size=[3, 3],
+                    padding ="same",
+                    strides=1,
+                    reuse = reuse,
+                    activation=tf.nn.relu, name='cnv3_1')
+            conv4 = tf.layers.conv2d(
+                    inputs=conv3_1,
+                    filters=512,
+                    kernel_size=[3, 3],
+                    padding ="same",
+                    strides=2,
+                    reuse = reuse,
+                    activation=tf.nn.relu, name='cnv4')
+            conv4_1 = tf.layers.conv2d(
+                    inputs=conv4,
+                    filters=512,
+                    kernel_size=[3, 3],
+                    padding ="same",
+                    strides=1,
+                    reuse = reuse,
+                    activation=tf.nn.relu, name='cnv4_1')
+            conv5 = tf.layers.conv2d(
+                    inputs=conv4_1,
+                    filters=512,
+                    kernel_size=[3, 3],
+                    padding ="same",
+                    strides=2,
+                    reuse = reuse,
+                    activation=tf.nn.relu, name='cnv5')
+            conv5_1 = tf.layers.conv2d(
+                    inputs=conv5,
+                    filters=512,
+                    kernel_size=[3, 3],
+                    padding ="same",
+                    strides=1,
+                    reuse = reuse,
+                    activation=tf.nn.relu, name='cnv5_1')
+            output = tf.layers.conv2d(
+                    inputs=conv5_1,
+                    filters=1024,
+                    kernel_size=[3, 3],
+                    padding ="same",
+                    reuse = reuse,
+                    strides=2, name='output')
+            """ The output is connected to RNN
+            """
         return output
+
+def initialize_uninitialized(sess):
+    global_vars = tf.global_variables()
+    is_not_initialized = sess.run([tf.is_variable_initialized(var) for var in global_vars])
+    not_initialized_vars = [v for (v, f) in zip(global_vars, is_not_initialized) if not f]
+
+    for i in not_initialized_vars: # only for testing
+        print(i.name)
+
+    if len(not_initialized_vars):
+        sess.run(tf.variables_initializer(not_initialized_vars))
+
+def get_optical_flow(input_layer, reuse = None, sess=None):
+    flownet = fns.FlowNetS(mode=Mode.TRAIN, debug=True, reuse=reuse)
+
+    inputs = {
+            'input_a': input_layer[:, :, :, :3],
+            'input_b': input_layer[:, :, :, 3:6]
+            }
+    training_schedule = LONG_SCHEDULE
+    output  = flownet.model(inputs, training_schedule, trainable=True)
+    print output
+    return output
 
 # Dataset Class
 class Kitty(object):
@@ -193,14 +218,14 @@ class Kitty(object):
     def __init__(self, config, data_dir='../dataset/', isTraining=True):
         self._config = config
         self._data_dir= data_dir
-        self._img_height, self._img_width = self.get_image(0,0).shape
+        self._img_height, self._img_width = 384, 1280
         self._current_initial_frame = 0
         self._current_trajectory_index = 0
         self._prev_trajectory_index = 0
         self._current_train_epoch = 0
         self._current_test_epoch = 0
-        self._training_trajectories = [0, 2]
-        self._test_trajectories = [1, 3]
+        self._training_trajectories = [0, 2, 8, 9]
+        self._test_trajectories = [1, 3, 5, 6]
         if isTraining:
             self._current_trajectories = self._training_trajectories
         else:
@@ -211,12 +236,12 @@ class Kitty(object):
             self._pose_size = 3
 
     def get_image(self, trajectory, frame_index):
-        img = cv2.imread( self._data_dir + 'sequences/'+ '%02d' % trajectory + '/image_0/' +  '%06d' % frame_index + '.png', 0)
+        img = cv2.imread( self._data_dir + 'sequences/'+ '%02d' % trajectory + '/image_0/' +  '%06d' % frame_index + '.png')
         if img is not None:
-            # Subtracting mean intensity value of the corresponding image
+            # Normalizing and Subtracting mean intensity value of the corresponding image
+            img = img/np.max(img)
             img = img - np.mean(img)
-            if not(trajectory==0):
-                img = cv2.resize(img, (self._img_width, self._img_height), fx=0, fy=0)
+            img = cv2.resize(img, (self._img_width, self._img_height), fx=0, fy=0)
         return img
 
     def get_poses(self, trajectory):
@@ -273,7 +298,7 @@ class Kitty(object):
             img_batch.append(img_stacked_series)
             label_batch.append(labels_series)
             self._current_initial_frame += self._config.time_steps
-        img_batch = np.reshape(np.array(img_batch), [self._config.time_steps, self._config.batch_size, self._img_height, self._img_width, 2])
+        img_batch = np.reshape(np.array(img_batch), [self._config.time_steps, self._config.batch_size, self._img_height, self._img_width, 6])
         label_batch = np.reshape(np.array(label_batch), [self._config.time_steps, self._config.batch_size, self._pose_size])
         return img_batch, label_batch
 
@@ -290,7 +315,7 @@ class Config(object):
         self.time_steps = time_steps
 
 def find_global_step():
-    model_dir = './model_dir/'
+    model_dir = MODEL_DIR
     if os.path.isdir(model_dir):
         metafiles = [f for f in os.listdir(model_dir) if
                 (os.path.isfile(os.path.join(model_dir, f)) and f.endswith(".meta"))]
@@ -301,6 +326,9 @@ def find_global_step():
             else:
                 global_step = int(metafiles[-1][11:-5])
             resume_Training = True
+        else:
+            global_step = 0
+            resume_Training = False
     else:
         global_step = 0
         resume_Training = False
@@ -312,6 +340,7 @@ def main():
             time_steps=TIME_STEPS, num_steps=NUM_TRAIN_STEPS, batch_size=BATCH_SIZE)
     # configuration
     kitty_data = Kitty(config)
+    sess = tf.Session()
     if not config.only_position:
         pose_size = 6
     else:
@@ -319,12 +348,12 @@ def main():
         warnings.warn("Warning! Orientation data is ignored!")
 
     # only for gray scale dataset, for colored channels will be 6
-    height, width, channels = 376, 1241, 2
+    height, width, channels = 384, 1280, 6
 
     global_step, resume_Training = find_global_step()
     if resume_Training:
         tf.reset_default_graph()
-        imported_meta = tf.train.import_meta_graph("./model_dir/model.meta")
+        imported_meta = tf.train.import_meta_graph(MODEL_DIR + "model.meta")
         #if global_step == (config.num_steps - 1):
         #    imported_meta = tf.train.import_meta_graph("./model_dir/model.meta")
         #else:
@@ -340,9 +369,9 @@ def main():
     else:
         with tf.name_scope('input'):
             # placeholder for input
-            input_data = tf.placeholder(tf.float32, [config.time_steps, None, height, width, channels])
+            input_data = tf.placeholder(tf.float32, [config.time_steps, config.batch_size, height, width, channels])
             # placeholder for labels
-            labels_ = tf.placeholder(tf.float32, [config.time_steps, None, pose_size])
+            labels_ = tf.placeholder(tf.float32, [config.time_steps, config.batch_size, pose_size])
 
         with tf.name_scope('unstacked_input'):
             # Unstacking the input into list of time series
@@ -354,8 +383,12 @@ def main():
         # Building the RCNN Network which
         # which returns the time series of output layers
         with tf.name_scope('RCNN'):
-            (outputs, _)  = build_rcnn_graph(config, input_)
-
+            (outputs, _)  = build_rcnn_graph(config, input_, sess=sess)
+        # Restoring FlowNetS variables
+        var_list = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='FlowNetS')
+        print var_list
+        pretrained_saver = tf.train.Saver(var_list=var_list)
+        pretrained_saver.restore(sess, './fn2/checkpoints/FlowNetS/flownet-S.ckpt-0')
         # Output layer to compute the output
         with tf.name_scope('weights'):
             regression_w = tf.get_variable('regression_w', shape=[config.hidden_size, pose_size], dtype=tf.float32)
@@ -390,55 +423,50 @@ def main():
         # by default ./model_dir
         merged = tf.summary.merge_all()
 
-    saver = tf.train.Saver()
+    print([x.name for x in tf.global_variables()])
 
-    with tf.Session() as sess:
-        if (global_step != 0):
-            imported_meta.restore(sess, tf.train.latest_checkpoint('./model_dir/'))
-        train_writer = tf.summary.FileWriter('./model_dir/train', sess.graph)
-        test_writer = tf.summary.FileWriter('./model_dir/test')
-        # Initialize the variables (i.e. assign their default value)
-        init = tf.global_variables_initializer()
-        # Run the initializer
-        sess.run(init)
-        #print("Optimization Finished!")
-        # Training and Testing Loop
-        for i in range(global_step, global_step + config.num_steps):
-            print('step : %d'%i)
-            if i % 10 == 0:  # Record summaries and test-set accuracy
-                batch_x, batch_y = kitty_data.get_next_batch(isTraining=False)
-                summary, acc = sess.run(
-                        [merged, loss_op], feed_dict={input_data:batch_x, labels_:batch_y})
-                test_writer.add_summary(summary, i)
-                print('Accuracy at step %s: %s' % (i, acc))
-            else:  # Record train set summaries, and train
-                if i % 100 == 99:  # Record execution stats
-                    run_options = tf.RunOptions(
-                        trace_level=tf.RunOptions.FULL_TRACE)
-                    run_metadata = tf.RunMetadata()
-                    batch_x, batch_y = kitty_data.get_next_batch(isTraining=True)
-                    summary, _ = sess.run([merged, train_op],
-                            feed_dict={input_data:batch_x, labels_:batch_y},
-                            options=run_options,
-                            run_metadata=run_metadata)
-                    train_writer.add_run_metadata(run_metadata, 'step%03d' % i)
-                    train_writer.add_summary(summary, i)
-                    print('Adding run metadata for', i)
-                else:  # Record a summary
-                    batch_x, batch_y = kitty_data.get_next_batch(isTraining=True)
-                    summary, _ = sess.run(
-                        [merged, train_op], feed_dict={input_data:batch_x, labels_:batch_y})
-                    train_writer.add_summary(summary, i)
-                    train_loss = sess.run(loss_op,
-                            feed_dict={input_data:batch_x, labels_:batch_y})
-                    print('Train_error at step %s: %s' % (i, train_loss))
-                if i % (config.num_steps/2) == 0:
-                    saver.save(sess, './model_dir/model_iter', global_step=i)
-        save_path = saver.save(sess, "./model_dir/model")
-        print("Model saved in file: %s" % save_path)
-        print("epochs trained: " + str(kitty_data._current_train_epoch))
-        train_writer.close()
-        test_writer.close()
+    if (global_step != 0):
+        imported_meta.restore(sess, tf.train.latest_checkpoint(MODEL_DIR))
+    initialize_uninitialized(sess)
+    train_writer = tf.summary.FileWriter(MODEL_DIR + 'train', sess.graph)
+    test_writer = tf.summary.FileWriter(MODEL_DIR + 'test')
+    # Training and Testing Loop
+    for i in range(global_step, global_step + config.num_steps):
+        print('step : %d'%i)
+        if i % 10 == 0:  # Record summaries and test-set accuracy
+            batch_x, batch_y = kitty_data.get_next_batch(isTraining=False)
+            summary, acc = sess.run(
+                    [merged, loss_op], feed_dict={input_data:batch_x, labels_:batch_y})
+            test_writer.add_summary(summary, i)
+            print('Accuracy at step %s: %s' % (i, acc))
+        else:  # Record train set summaries, and train
+            if i % 100 == 99:  # Record execution stats
+                run_options = tf.RunOptions(
+                    trace_level=tf.RunOptions.FULL_TRACE)
+                run_metadata = tf.RunMetadata()
+                batch_x, batch_y = kitty_data.get_next_batch(isTraining=True)
+                summary, _ = sess.run([merged, train_op],
+                        feed_dict={input_data:batch_x, labels_:batch_y},
+                        options=run_options,
+                        run_metadata=run_metadata)
+                train_writer.add_run_metadata(run_metadata, 'step%03d' % i)
+                train_writer.add_summary(summary, i)
+                print('Adding run metadata for', i)
+            else:  # Record a summary
+                batch_x, batch_y = kitty_data.get_next_batch(isTraining=True)
+                summary, _ = sess.run(
+                    [merged, train_op], feed_dict={input_data:batch_x, labels_:batch_y})
+                train_writer.add_summary(summary, i)
+                train_loss = sess.run(loss_op,
+                        feed_dict={input_data:batch_x, labels_:batch_y})
+                print('Train_error at step %s: %s' % (i, train_loss))
+            if i % (config.num_steps/4) == 0:
+                saver.save(sess, MODEL_DIR + 'model_iter', global_step=i)
+    save_path = saver.save(sess, MODEL_DIR + 'model')
+    print("Model saved in file: %s" % save_path)
+    print("epochs trained: " + str(kitty_data._current_train_epoch))
+    train_writer.close()
+    test_writer.close()
 
 
 if __name__ == "__main__":
