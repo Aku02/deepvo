@@ -14,15 +14,16 @@ from src.training_schedules import LONG_SCHEDULE
 parser = argparse.ArgumentParser(description='Directory to save model')
 parser.add_argument('--model_dir', action="store", dest="model_dir", default='./model_dir')
 parser.add_argument('--with_gpu', action="store_true", dest="with_gpu", default=False)
+parser.add_argument('--use_pretrained_cnn', action="store_true", dest="use_pretrained_cnn", default=False)
 FLAGS = parser.parse_args()
 """ Hyper Parameters for learning"""
 LEARNING_RATE = 0.001
-BATCH_SIZE = 1
+BATCH_SIZE = 4
 LSTM_HIDDEN_SIZE = 600
 LSTM_NUM_LAYERS = 2
 # global training steps
-NUM_TRAIN_STEPS = 10000
-TIME_STEPS = 7
+NUM_TRAIN_STEPS = 2000
+TIME_STEPS = 5
 MODEL_DIR = FLAGS.model_dir
 # FlowNetS Parameters
 Mode = fns.Mode
@@ -68,29 +69,30 @@ def build_rcnn_graph(config, input_, sess):
     rnn_inputs = []
     reuse = None
     for stacked_img in input_:
-        if FLAGS.with_gpu:
+        if FLAGS.use_pretrained_cnn:
             rnn_inputs.append(get_optical_flow(stacked_img, reuse=reuse))
         else:
             rnn_inputs.append(cnn_layers(stacked_img, reuse=reuse))
         reuse = True
     # Flattening the final convolution layers to feed them into RNN
     rnn_inputs = [tf.reshape(rnn_inputs[i],[-1, 20*6*1024]) for i in range(len(rnn_inputs))]
+    assert rnn_inputs[0].shape == (config.batch_size, 20*6*1024)
 
-    max_time = len(rnn_inputs)
+    #max_time = len(rnn_inputs)
 
-    rnn_inputs = tf.convert_to_tensor(rnn_inputs)
-    tf.summary.histogram('final_cnn_layer_activations', rnn_inputs)
-    rnn_inputs = tf.reshape(rnn_inputs, [-1, max_time, 20*6*1024])
+    #rnn_inputs = tf.convert_to_tensor(rnn_inputs)
+    #tf.summary.histogram('final_cnn_layer_activations', rnn_inputs)
 
     #config._initial_state = config.get_initial_state()
     # 'outputs' is a tensor of shape [batch_size, max_time, 1000]
     # 'state' is a N-tuple where N is the number of LSTMCells containing a
     # tf.contrib.rnn.LSTMStateTuple for each cell
-    outputs, state = tf.nn.dynamic_rnn(cell=multi_rnn_cell,
+    outputs, state = tf.nn.static_rnn(cell=multi_rnn_cell,
                                        inputs=rnn_inputs,
                                        dtype=tf.float32)
     # Tensor shaped: [batch_size, max_time, cell.output_size]
-    outputs = tf.unstack(outputs, max_time, axis=1)
+    #outputs = tf.unstack(outputs, max_time, axis=1)
+    assert outputs[0].shape == (config.batch_size, config.hidden_size)
     return outputs, state
 
 def get_ground_6d_poses(cordinates):
@@ -212,7 +214,7 @@ def get_optical_flow(input_layer, reuse = None, sess=None):
             'input_b': input_layer[:, :, :, 3:6]
             }
     training_schedule = LONG_SCHEDULE
-    output  = flownet.model(inputs, training_schedule, trainable=True)
+    output  = flownet.model(inputs, training_schedule, trainable=False)
     return output
 
 # Dataset Class
@@ -287,15 +289,13 @@ class Kitty(object):
 
             if (self.get_image(self._current_trajectories[self._current_trajectory_index], self._current_initial_frame + self._config.time_steps) is None):
                 self._set_next_trajectory(isTraining)
-            #print('In Range : %d for %d timesteps '%(self._current_initial_frame, self._config.time_steps))
             for i in range(self._current_initial_frame, self._current_initial_frame + self._config.time_steps):
                 img1 = self.get_image(self._current_trajectories[self._current_trajectory_index], i)
                 img2 = self.get_image(self._current_trajectories[self._current_trajectory_index], i+1)
-                img_aug = np.stack([img1, img2], -1)
+                img_aug = np.concatenate([img1, img2], -1)
                 img_stacked_series.append(img_aug)
                 if self._pose_size == 3:
                     cf = self._current_initial_frame
-                    print (np.array([poses[i,3], poses[i,7], poses[i,11]]) - np.array([poses[cf,3], poses[cf,7], poses[cf,11]]))
                     pose = np.array([poses[i,3], poses[i,7], poses[i,11]]) - np.array([poses[cf,3], poses[cf,7], poses[cf,11]])
                 else:
                     pose = get_ground_6d_poses(poses[i,:])
@@ -303,8 +303,12 @@ class Kitty(object):
             img_batch.append(img_stacked_series)
             label_batch.append(labels_series)
             self._current_initial_frame += self._config.time_steps
-        img_batch = np.reshape(np.array(img_batch), [self._config.time_steps, self._config.batch_size, self._img_height, self._img_width, 6])
-        label_batch = np.reshape(np.array(label_batch), [self._config.time_steps, self._config.batch_size, self._pose_size])
+        label_batch = np.array(label_batch)
+        img_batch = np.array(img_batch)
+        #print label_batch.shape
+        #print img_batch.shape
+        #print("Label_batch")
+        #print label_batch[0,:,:]
         return img_batch, label_batch
 
 # Config class
@@ -380,15 +384,15 @@ def main():
     else:
         with tf.name_scope('input'):
             # placeholder for input
-            input_data = tf.placeholder(tf.float32, [config.time_steps, config.batch_size, height, width, channels])
+            input_data = tf.placeholder(tf.float32, [config.batch_size, config.time_steps, height, width, channels])
             # placeholder for labels
-            labels_ = tf.placeholder(tf.float32, [config.time_steps, config.batch_size, pose_size])
+            labels_ = tf.placeholder(tf.float32, [config.batch_size, config.time_steps, pose_size])
 
         with tf.name_scope('unstacked_input'):
             # Unstacking the input into list of time series
-            input_ = tf.unstack(input_data, config.time_steps, 0)
+            input_ = tf.unstack(input_data, config.time_steps, 1)
             # Unstacking the labels into the time series
-            pose_labels = tf.unstack(labels_, config.time_steps, 0)
+            pose_labels = tf.unstack(labels_, config.time_steps, 1)
 
 
         # Building the RCNN Network which
@@ -409,14 +413,14 @@ def main():
         # Pose estimate by multiplication with RCNN_output and Output layer
         with tf.name_scope('Wx_plus_b'):
             pose_estimated = [tf.nn.xw_plus_b(output_state, regression_w, regression_b) for output_state in outputs]
+            max_time = len(pose_estimated)
 
         # Converting the list of tensor into a tensor
         # Probably this is the part that is unnecessary and causing problems (slowing down the computations)
-        # pose_estimated = tf.reshape(tf.convert_to_tensor(pose_estimated), [num_frames, pose_size])
 
         # Loss function for all the frames in a batch
         with tf.name_scope('loss_l2_norm'):
-            losses = [pos_est_i - pos_lab_i for pos_est_i, pos_lab_i in zip(pose_estimated, pose_labels)]
+            losses = [pose_es - pose_lab for pose_es, pose_lab in zip(pose_estimated, pose_labels)]
             loss_op = tf.reduce_sum(tf.square(losses))
             tf.summary.scalar('loss_l2_norm', loss_op)
 
@@ -435,7 +439,6 @@ def main():
         merged = tf.summary.merge_all()
         saver = tf.train.Saver()
 
-    #print([x.name for x in tf.global_variables()])
     if (global_step != 0):
         imported_meta.restore(sess, tf.train.latest_checkpoint(MODEL_DIR))
     else:
