@@ -13,15 +13,16 @@ from src.training_schedules import LONG_SCHEDULE
 
 parser = argparse.ArgumentParser(description='Directory to save model')
 parser.add_argument('--model_dir', action="store", dest="model_dir", default='./model_dir')
+parser.add_argument('--with_gpu', action="store_true", dest="with_gpu", default=False)
 FLAGS = parser.parse_args()
 """ Hyper Parameters for learning"""
 LEARNING_RATE = 0.001
-BATCH_SIZE = 5
+BATCH_SIZE = 1
 LSTM_HIDDEN_SIZE = 600
 LSTM_NUM_LAYERS = 2
 # global training steps
-NUM_TRAIN_STEPS = 2000
-TIME_STEPS = 10
+NUM_TRAIN_STEPS = 10000
+TIME_STEPS = 7
 MODEL_DIR = FLAGS.model_dir
 # FlowNetS Parameters
 Mode = fns.Mode
@@ -67,7 +68,10 @@ def build_rcnn_graph(config, input_, sess):
     rnn_inputs = []
     reuse = None
     for stacked_img in input_:
-        rnn_inputs.append(get_optical_flow(stacked_img, reuse=reuse, sess=sess))
+        if FLAGS.with_gpu:
+            rnn_inputs.append(get_optical_flow(stacked_img, reuse=reuse))
+        else:
+            rnn_inputs.append(cnn_layers(stacked_img, reuse=reuse))
         reuse = True
     # Flattening the final convolution layers to feed them into RNN
     rnn_inputs = [tf.reshape(rnn_inputs[i],[-1, 20*6*1024]) for i in range(len(rnn_inputs))]
@@ -75,6 +79,7 @@ def build_rcnn_graph(config, input_, sess):
     max_time = len(rnn_inputs)
 
     rnn_inputs = tf.convert_to_tensor(rnn_inputs)
+    tf.summary.histogram('final_cnn_layer_activations', rnn_inputs)
     rnn_inputs = tf.reshape(rnn_inputs, [-1, max_time, 20*6*1024])
 
     #config._initial_state = config.get_initial_state()
@@ -207,7 +212,7 @@ def get_optical_flow(input_layer, reuse = None, sess=None):
             'input_b': input_layer[:, :, :, 3:6]
             }
     training_schedule = LONG_SCHEDULE
-    output  = flownet.model(inputs, training_schedule, trainable=False)
+    output  = flownet.model(inputs, training_schedule, trainable=True)
     return output
 
 # Dataset Class
@@ -341,9 +346,11 @@ def main():
             time_steps=TIME_STEPS, num_steps=NUM_TRAIN_STEPS, batch_size=BATCH_SIZE)
     # configuration
     kitty_data = Kitty(config)
-    #config_proto = tf.ConfigProto(device_count = {'GPU': 0})
-    #sess = tf.Session(config=config_proto)
-    sess = tf.Session()
+    if FLAGS.with_gpu:
+        sess = tf.Session()
+    else:
+        config_proto = tf.ConfigProto(device_count = {'GPU': 0})
+        sess = tf.Session(config=config_proto)
     if not config.only_position:
         pose_size = 6
     else:
@@ -388,11 +395,12 @@ def main():
         # which returns the time series of output layers
         with tf.name_scope('RCNN'):
             (outputs, _)  = build_rcnn_graph(config, input_, sess=sess)
-        # Restoring FlowNetS variables
-        var_list = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='FlowNetS')
-        pretrained_saver = tf.train.Saver(var_list=var_list)
-        pretrained_saver.restore(sess, './fn2/checkpoints/FlowNetS/flownet-S.ckpt-0')
-        # Output layer to compute the output
+        if FLAGS.with_gpu:
+            # Restoring FlowNetS variables
+            var_list = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='FlowNetS')
+            pretrained_saver = tf.train.Saver(var_list=var_list)
+            pretrained_saver.restore(sess, './fn2/checkpoints/FlowNetS/flownet-S.ckpt-0')
+        ## Output layer to compute the output
         with tf.name_scope('weights'):
             regression_w = tf.get_variable('regression_w', shape=[config.hidden_size, pose_size], dtype=tf.float32)
         with tf.name_scope('biases'):
