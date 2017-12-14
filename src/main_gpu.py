@@ -8,8 +8,6 @@ import math
 import warnings
 import argparse
 sys.path.append('fn2/')
-import src.flownet_s.flownet_s as fns
-from src.training_schedules import LONG_SCHEDULE
 
 parser = argparse.ArgumentParser(description='Directory to save model')
 parser.add_argument('--model_dir', action="store", dest="model_dir", default='./model_dir')
@@ -18,15 +16,18 @@ parser.add_argument('--use_pretrained_cnn', action="store_true", dest="use_pretr
 FLAGS = parser.parse_args()
 """ Hyper Parameters for learning"""
 LEARNING_RATE = 0.001
-BATCH_SIZE = 4
-LSTM_HIDDEN_SIZE = 600
+BATCH_SIZE = 1
+LSTM_HIDDEN_SIZE = 1000
 LSTM_NUM_LAYERS = 2
 # global training steps
 NUM_TRAIN_STEPS = 2000
-TIME_STEPS = 5
+TIME_STEPS = 7
 MODEL_DIR = FLAGS.model_dir
-# FlowNetS Parameters
-Mode = fns.Mode
+if FLAGS.with_gpu:
+    # FlowNetS Parameters
+    Mode = fns.Mode
+    import src.flownet_s.flownet_s as fns
+    from src.training_schedules import LONG_SCHEDULE
 
 def isRotationMatrix(R):
     """ Checks if a matrix is a valid rotation matrix
@@ -450,6 +451,7 @@ def main():
         print('step : %d'%i)
         if i % 10 == 0:  # Record summaries and test-set accuracy
             batch_x, batch_y = kitty_data.get_next_batch(isTraining=False)
+            print batch_y
             summary, acc = sess.run(
                     [merged, loss_op], feed_dict={input_data:batch_x, labels_:batch_y})
             test_writer.add_summary(summary, i)
