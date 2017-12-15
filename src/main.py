@@ -12,22 +12,23 @@ sys.path.append('fn2/')
 parser = argparse.ArgumentParser(description='Directory to save model')
 parser.add_argument('--model_dir', action="store", dest="model_dir", default='./model_dir')
 parser.add_argument('--with_gpu', action="store_true", dest="with_gpu", default=False)
+parser.add_argument('--without_angles', action="store_true", dest="only_position", default=False)
 parser.add_argument('--use_pretrained_cnn', action="store_true", dest="use_pretrained_cnn", default=False)
 FLAGS = parser.parse_args()
 """ Hyper Parameters for learning"""
 LEARNING_RATE = 0.001
-BATCH_SIZE = 1
-LSTM_HIDDEN_SIZE = 1000
+BATCH_SIZE = 2
+LSTM_HIDDEN_SIZE = 550
 LSTM_NUM_LAYERS = 2
 # global training steps
 NUM_TRAIN_STEPS = 2000
-TIME_STEPS = 7
+TIME_STEPS = 5
 MODEL_DIR = FLAGS.model_dir
 if FLAGS.with_gpu:
     # FlowNetS Parameters
-    Mode = fns.Mode
     import src.flownet_s.flownet_s as fns
     from src.training_schedules import LONG_SCHEDULE
+    Mode = fns.Mode
 
 def isRotationMatrix(R):
     """ Checks if a matrix is a valid rotation matrix
@@ -96,9 +97,12 @@ def build_rcnn_graph(config, input_, sess):
     assert outputs[0].shape == (config.batch_size, config.hidden_size)
     return outputs, state
 
-def get_ground_6d_poses(cordinates):
+def get_ground_6d_poses(p):
     """ For 6dof pose representaion """
-    pass
+    pos = np.array([p[3], p[7], p[11]])
+    R = np.array([[p[0], p[1], p[2]], [p[4], p[5], p[6]], [p[8], p[9], p[10]]])
+    angles = rotationMatrixToEulerAngles(R)
+    return np.concatenate((pos, angles))
 
 def cnn_layers(input_layer, reuse = None):
         """ input: input_layer of concatonated images (img, img_next) where \
@@ -295,11 +299,11 @@ class Kitty(object):
                 img2 = self.get_image(self._current_trajectories[self._current_trajectory_index], i+1)
                 img_aug = np.concatenate([img1, img2], -1)
                 img_stacked_series.append(img_aug)
+                cf = self._current_initial_frame
                 if self._pose_size == 3:
-                    cf = self._current_initial_frame
                     pose = np.array([poses[i,3], poses[i,7], poses[i,11]]) - np.array([poses[cf,3], poses[cf,7], poses[cf,11]])
                 else:
-                    pose = get_ground_6d_poses(poses[i,:])
+                    pose = get_ground_6d_poses(poses[i,:]) - get_ground_6d_poses(poses[cf,:])
                 labels_series.append(pose)
             img_batch.append(img_stacked_series)
             label_batch.append(labels_series)
@@ -348,7 +352,7 @@ def find_global_step():
 def main():
     """ main function """
     config = Config(lstm_hidden_size=LSTM_HIDDEN_SIZE, lstm_num_layers=LSTM_NUM_LAYERS,
-            time_steps=TIME_STEPS, num_steps=NUM_TRAIN_STEPS, batch_size=BATCH_SIZE)
+            time_steps=TIME_STEPS, num_steps=NUM_TRAIN_STEPS, batch_size=BATCH_SIZE, only_position=FLAGS.only_position)
     # configuration
     kitty_data = Kitty(config)
     if FLAGS.with_gpu:
@@ -376,7 +380,7 @@ def main():
         input_data = tf.get_default_graph().get_tensor_by_name("input/Placeholder:0")
         # placeholder for labels
         labels_ = tf.get_default_graph().get_tensor_by_name("input/Placeholder_1:0")
-        loss_op = tf.get_default_graph().get_tensor_by_name("loss_l2_norm/Sum:0")
+        loss_op = tf.get_default_graph().get_tensor_by_name("loss_l2_norm/loss:0")
         tf.summary.scalar('loss_l2_norm', loss_op)
         train_op = tf.get_default_graph().get_operation_by_name("train/Adam")
         merged = tf.summary.merge_all()
@@ -400,7 +404,7 @@ def main():
         # which returns the time series of output layers
         with tf.name_scope('RCNN'):
             (outputs, _)  = build_rcnn_graph(config, input_, sess=sess)
-        if FLAGS.with_gpu:
+        if FLAGS.use_pretrained_cnn:
             # Restoring FlowNetS variables
             var_list = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='FlowNetS')
             pretrained_saver = tf.train.Saver(var_list=var_list)
@@ -421,8 +425,11 @@ def main():
 
         # Loss function for all the frames in a batch
         with tf.name_scope('loss_l2_norm'):
-            losses = [pose_es - pose_lab for pose_es, pose_lab in zip(pose_estimated, pose_labels)]
-            loss_op = tf.reduce_sum(tf.square(losses))
+            position = [pose_es[:,:3] - pose_lab[:,:3] for pose_es, pose_lab in zip(pose_estimated, pose_labels)]
+            angles = [pose_es[:,3:6] - pose_lab[:,3:6] for pose_es, pose_lab in zip(pose_estimated, pose_labels)]
+            pose_error = (tf.square(position))
+            angle_error = (tf.square(angles))
+            loss_op = tf.reduce_sum(pose_error + 100*angle_error, name='loss')
             tf.summary.scalar('loss_l2_norm', loss_op)
 
         #optimizer
