@@ -14,6 +14,7 @@ parser.add_argument('--model_dir', action="store", dest="model_dir", default='./
 parser.add_argument('--with_gpu', action="store_true", dest="with_gpu", default=False)
 parser.add_argument('--without_angles', action="store_true", dest="only_position", default=False)
 parser.add_argument('--use_pretrained_cnn', action="store_true", dest="use_pretrained_cnn", default=False)
+parser.add_argument('--start_testing', action="store_true", dest="test_flag", default=False)
 FLAGS = parser.parse_args()
 """ Hyper Parameters for learning"""
 LEARNING_RATE = 0.0005
@@ -22,7 +23,7 @@ LSTM_HIDDEN_SIZE = 550
 LSTM_NUM_LAYERS = 2
 # global training steps
 NUM_TRAIN_STEPS = 2000
-TIME_STEPS = 6 
+TIME_STEPS = 5 
 MODEL_DIR = FLAGS.model_dir
 if FLAGS.with_gpu:
     # FlowNetS Parameters
@@ -281,6 +282,7 @@ class Kitty(object):
         """
         img_batch = []
         label_batch = []
+        img_path_batch = []
         if isTraining:
             self._current_trajectories = self._training_trajectories
         else:
@@ -291,6 +293,7 @@ class Kitty(object):
         for j in range(self._config.batch_size):
             img_stacked_series = []
             labels_series = []
+            img_path_series = []
             print('Current Trajectory is : %d'% self._current_trajectories[self._current_trajectory_index])
 
             read_img, read_path = self.get_image(self._current_trajectories[self._current_trajectory_index], self._current_initial_frame + self._config.time_steps)
@@ -299,9 +302,10 @@ class Kitty(object):
                 self._set_next_trajectory(isTraining)
             for i in range(self._current_initial_frame, self._current_initial_frame + self._config.time_steps):
                 img1, img1_path = self.get_image(self._current_trajectories[self._current_trajectory_index], i)
-                img2, img1_path = self.get_image(self._current_trajectories[self._current_trajectory_index], i+1)
+                img2, img2_path = self.get_image(self._current_trajectories[self._current_trajectory_index], i+1)
                 img_aug = np.concatenate([img1, img2], -1)
                 img_stacked_series.append(img_aug)
+                img_path_series.append(img1_path)
                 cf = self._current_initial_frame
                 if self._pose_size == 3:
                     pose = np.array([poses[i,3], poses[i,7], poses[i,11]]) - np.array([poses[cf,3], poses[cf,7], poses[cf,11]])
@@ -309,6 +313,7 @@ class Kitty(object):
                     pose = get_ground_6d_poses(poses[i,:]) - get_ground_6d_poses(poses[cf,:])
                 labels_series.append(pose)
             img_batch.append(img_stacked_series)
+            img_path_batch.append(img_path_series)
             label_batch.append(labels_series)
             self._current_initial_frame += self._config.time_steps
         label_batch = np.array(label_batch)
@@ -317,7 +322,7 @@ class Kitty(object):
         #print img_batch.shape
         #print("Label_batch")
         #print label_batch[0,:,:]
-        return img_batch, label_batch
+        return img_batch, label_batch, img_path_batch
 
 # Config class
 class Config(object):
@@ -352,21 +357,44 @@ def find_global_step():
         resume_Training = False
     return global_step, resume_Training
 
-def inference(input_batch):
+def inference():
+        config = Config(lstm_hidden_size=LSTM_HIDDEN_SIZE, lstm_num_layers=LSTM_NUM_LAYERS,
+            time_steps=TIME_STEPS, num_steps=NUM_TRAIN_STEPS, batch_size=BATCH_SIZE, only_position=FLAGS.only_position)
+        # configuration
+        config_proto = tf.ConfigProto(device_count = {'GPU': 0})
+        sess = tf.Session(config=config_proto)
+        kitty_data = Kitty(config)
         """ input_batch must be in shape of [?, TIME_STEPS, 384, 1280, 6] """
-        tf.reset_default_graph()
-        sess = tf.Session()
+        #tf.reset_default_graph()
         print('Restoring Entire Session from checkpoint : %s'%MODEL_DIR+"model.meta")
         imported_meta = tf.train.import_meta_graph(MODEL_DIR + "model.meta")
-        imported_meta.restore(sess, tf.train.latest_checkpoint(MODEL_DIR))
         print('Sucess')
+        imported_meta.restore(sess, tf.train.latest_checkpoint(MODEL_DIR))
         input_data = tf.get_default_graph().get_tensor_by_name("input/Placeholder:0")
         # placeholder for labels
         labels_ = tf.get_default_graph().get_tensor_by_name("input/Placeholder_1:0")
         loss_op = tf.get_default_graph().get_tensor_by_name("loss_l2_norm/loss:0")
-        pose_estimated = tf.get_default_graph().get_tensor_by_name("Wx_plus_b/xw_plus_b:0")
-        output = sess.run(pose_estimated, feed_dict={input_data:input_data})
-        return output
+        poses = []
+        poses.append(tf.get_default_graph().get_tensor_by_name("Wx_plus_b/xw_plus_b:0"))
+        poses.append(tf.get_default_graph().get_tensor_by_name("Wx_plus_b/xw_plus_b_1:0"))
+        poses.append(tf.get_default_graph().get_tensor_by_name("Wx_plus_b/xw_plus_b_2:0"))
+        poses.append(tf.get_default_graph().get_tensor_by_name("Wx_plus_b/xw_plus_b_3:0"))
+        poses.append(tf.get_default_graph().get_tensor_by_name("Wx_plus_b/xw_plus_b_4:0"))
+        while kitty_data._current_train_epoch < 1:
+            input_, ground_truth_batch, img_path_batch = kitty_data.get_next_batch(isTraining=False)
+            print (img_path_batch) 
+            output = sess.run(poses, feed_dict={input_data:input_})
+	    print(len(output))
+            for i in range(len(output)):
+                fh = open("output_file","a")
+                fh.write("%f %f %f\n"%(ground_truth_batch[:,i,0],ground_truth_batch[:,i,1],ground_truth_batch[:,i,2])) #str(read_img) + str(pose) + '\n')
+                fh.close()
+                fh = open("estimated","a")
+                fh.write("%f %f %f\n"%(output[i][0,0],output[i][0,1],output[i][0,2])) #str(read_img) + str(pose) + '\n')
+                fh.close()
+                fh = open("img_file_names\n","a")
+                fh.write(str(img_path_batch[0][i])) #str(read_img) + str(pose) + '\n')
+                fh.close()
 
 def main():
     """ main function """
@@ -502,7 +530,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if FLAGS.test_flag:
+        inference()
+    else:    
+        main()
 
     """
     print find_global_step()
