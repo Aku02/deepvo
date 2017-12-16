@@ -17,7 +17,7 @@ parser.add_argument('--use_pretrained_cnn', action="store_true", dest="use_pretr
 FLAGS = parser.parse_args()
 """ Hyper Parameters for learning"""
 LEARNING_RATE = 0.001
-BATCH_SIZE = 2
+BATCH_SIZE = 1
 LSTM_HIDDEN_SIZE = 550
 LSTM_NUM_LAYERS = 2
 # global training steps
@@ -234,8 +234,8 @@ class Kitty(object):
         self._prev_trajectory_index = 0
         self._current_train_epoch = 0
         self._current_test_epoch = 0
-        self._training_trajectories = [0, 2, 8, 9]
-        self._test_trajectories = [1, 3, 5, 6]
+        self._training_trajectories = [4]
+        self._test_trajectories = [4]
         if isTraining:
             self._current_trajectories = self._training_trajectories
         else:
@@ -246,13 +246,14 @@ class Kitty(object):
             self._pose_size = 3
 
     def get_image(self, trajectory, frame_index):
+	img_path =  self._data_dir + 'sequences/'+ '%02d' % trajectory + '/image_0/' +  '%06d' % frame_index + '.png'
         img = cv2.imread( self._data_dir + 'sequences/'+ '%02d' % trajectory + '/image_0/' +  '%06d' % frame_index + '.png')
         if img is not None:
             # Normalizing and Subtracting mean intensity value of the corresponding image
             img = img/np.max(img)
             img = img - np.mean(img)
             img = cv2.resize(img, (self._img_width, self._img_height), fx=0, fy=0)
-        return img
+        return img, img_path
 
     def get_poses(self, trajectory):
         with open(self._data_dir + 'poses/' +  '%02d' % trajectory + '.txt') as f:
@@ -292,11 +293,13 @@ class Kitty(object):
             labels_series = []
             print('Current Trajectory is : %d'% self._current_trajectories[self._current_trajectory_index])
 
-            if (self.get_image(self._current_trajectories[self._current_trajectory_index], self._current_initial_frame + self._config.time_steps) is None):
+            read_img, read_path = self.get_image(self._current_trajectories[self._current_trajectory_index], self._current_initial_frame + self._config.time_steps)
+
+            if (read_img is None):
                 self._set_next_trajectory(isTraining)
             for i in range(self._current_initial_frame, self._current_initial_frame + self._config.time_steps):
-                img1 = self.get_image(self._current_trajectories[self._current_trajectory_index], i)
-                img2 = self.get_image(self._current_trajectories[self._current_trajectory_index], i+1)
+                img1, img1_path = self.get_image(self._current_trajectories[self._current_trajectory_index], i)
+                img2, img1_path = self.get_image(self._current_trajectories[self._current_trajectory_index], i+1)
                 img_aug = np.concatenate([img1, img2], -1)
                 img_stacked_series.append(img_aug)
                 cf = self._current_initial_frame
@@ -454,7 +457,10 @@ def main():
     train_writer = tf.summary.FileWriter(MODEL_DIR + 'train', sess.graph)
     test_writer = tf.summary.FileWriter(MODEL_DIR + 'test')
     # Training and Testing Loop
-    for i in range(global_step, global_step + config.num_steps):
+    #for i in range(global_step, global_step + config.num_steps):
+    i = 0
+    while kitty_data._current_train_epoch < 5:
+        print(kitty_data._current_train_epoch)
         print('step : %d'%i)
         if i % 10 == 0:  # Record summaries and test-set accuracy
             batch_x, batch_y = kitty_data.get_next_batch(isTraining=False)
@@ -471,6 +477,7 @@ def main():
             train_loss = sess.run(loss_op,
                     feed_dict={input_data:batch_x, labels_:batch_y})
             print('Train_error at step %s: %s' % (i, train_loss))
+        i += 1
     save_path = saver.save(sess, MODEL_DIR + 'model')
     print("Model saved in file: %s" % save_path)
     print("epochs trained: " + str(kitty_data._current_train_epoch))
