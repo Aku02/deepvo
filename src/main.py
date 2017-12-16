@@ -16,13 +16,13 @@ parser.add_argument('--without_angles', action="store_true", dest="only_position
 parser.add_argument('--use_pretrained_cnn', action="store_true", dest="use_pretrained_cnn", default=False)
 FLAGS = parser.parse_args()
 """ Hyper Parameters for learning"""
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.0005
 BATCH_SIZE = 1
 LSTM_HIDDEN_SIZE = 550
 LSTM_NUM_LAYERS = 2
 # global training steps
 NUM_TRAIN_STEPS = 2000
-TIME_STEPS = 5
+TIME_STEPS = 6 
 MODEL_DIR = FLAGS.model_dir
 if FLAGS.with_gpu:
     # FlowNetS Parameters
@@ -234,8 +234,8 @@ class Kitty(object):
         self._prev_trajectory_index = 0
         self._current_train_epoch = 0
         self._current_test_epoch = 0
-        self._training_trajectories = [4]
-        self._test_trajectories = [4]
+        self._training_trajectories = [3]
+        self._test_trajectories = [3]
         if isTraining:
             self._current_trajectories = self._training_trajectories
         else:
@@ -352,7 +352,7 @@ def find_global_step():
         resume_Training = False
     return global_step, resume_Training
 
-def inference(input_batch)
+def inference(input_batch):
         """ input_batch must be in shape of [?, TIME_STEPS, 384, 1280, 6] """
         tf.reset_default_graph()
         sess = tf.Session()
@@ -436,7 +436,7 @@ def main():
 
         # Pose estimate by multiplication with RCNN_output and Output layer
         with tf.name_scope('Wx_plus_b'):
-            pose_estimated = [tf.nn.xw_plus_b(output_state, regression_w, regression_b) for output_state in outputs, name='pose_estimated']
+            pose_estimated = [tf.nn.xw_plus_b(output_state, regression_w, regression_b) for output_state in outputs]
             max_time = len(pose_estimated)
 
         # Converting the list of tensor into a tensor
