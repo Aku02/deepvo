@@ -352,6 +352,22 @@ def find_global_step():
         resume_Training = False
     return global_step, resume_Training
 
+def inference(input_batch)
+        """ input_batch must be in shape of [?, TIME_STEPS, 384, 1280, 6] """
+        tf.reset_default_graph()
+        sess = tf.Session()
+        print('Restoring Entire Session from checkpoint : %s'%MODEL_DIR+"model.meta")
+        imported_meta = tf.train.import_meta_graph(MODEL_DIR + "model.meta")
+        imported_meta.restore(sess, tf.train.latest_checkpoint(MODEL_DIR))
+        print('Sucess')
+        input_data = tf.get_default_graph().get_tensor_by_name("input/Placeholder:0")
+        # placeholder for labels
+        labels_ = tf.get_default_graph().get_tensor_by_name("input/Placeholder_1:0")
+        loss_op = tf.get_default_graph().get_tensor_by_name("loss_l2_norm/loss:0")
+        pose_estimated = tf.get_default_graph().get_tensor_by_name("Wx_plus_b/xw_plus_b:0")
+        output = sess.run(pose_estimated, feed_dict={input_data:input_data})
+        return output
+
 def main():
     """ main function """
     config = Config(lstm_hidden_size=LSTM_HIDDEN_SIZE, lstm_num_layers=LSTM_NUM_LAYERS,
@@ -420,7 +436,7 @@ def main():
 
         # Pose estimate by multiplication with RCNN_output and Output layer
         with tf.name_scope('Wx_plus_b'):
-            pose_estimated = [tf.nn.xw_plus_b(output_state, regression_w, regression_b) for output_state in outputs]
+            pose_estimated = [tf.nn.xw_plus_b(output_state, regression_w, regression_b) for output_state in outputs, name='pose_estimated']
             max_time = len(pose_estimated)
 
         # Converting the list of tensor into a tensor
